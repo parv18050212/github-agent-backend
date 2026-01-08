@@ -67,14 +67,14 @@ jobs:
             echo "=========================================="
             
             # Check if repo exists, clone or pull
-            if [ -d "/home/ubuntu/repo-analyzer" ]; then
+            if [ -d "/home/ec2-user/repo-analyzer" ]; then
               echo "Updating existing repository..."
-              cd /home/ubuntu/repo-analyzer
+              cd /home/ec2-user/repo-analyzer
               git fetch origin
               git reset --hard origin/main
             else
               echo "Cloning repository..."
-              cd /home/ubuntu
+              cd /home/ec2-user
               git clone https://github.com/${{ github.repository }}.git repo-analyzer
               cd repo-analyzer
             fi
