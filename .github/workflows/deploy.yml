@@ -1,0 +1,158 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+      - production
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  DEPLOY_PATH: /home/ubuntu/repo-analyzer
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: |
+          pytest tests/ -v --tb=short
+        continue-on-error: false
+
+      - name: Test import
+        run: |
+          python -c "from backend.routers.frontend_api import router; print('✓ Frontend API loaded')"
+
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: repo-analyzer:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to EC2
+        env:
+          PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $HOST >> ~/.ssh/known_hosts
+
+          # Deploy via SSH
+          ssh -i ~/.ssh/deploy_key $USER@$HOST << 'ENDSSH'
+            set -e
+            
+            echo "📦 Updating repository..."
+            cd ${{ env.DEPLOY_PATH }}
+            git pull origin main
+            
+            echo "🔧 Setting up environment..."
+            cat > .env << EOF
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
+          ENVIRONMENT=production
+          LOG_LEVEL=info
+          WORKERS=4
+          EOF
+            
+            echo "🐳 Rebuilding containers..."
+            docker-compose down
+            docker-compose build --no-cache
+            docker-compose up -d
+            
+            echo "⏳ Waiting for health check..."
+            sleep 10
+            
+            # Health check with retry
+            for i in {1..30}; do
+              if curl -f http://localhost:8000/health > /dev/null 2>&1; then
+                echo "✅ Deployment successful!"
+                exit 0
+              fi
+              echo "Waiting... ($i/30)"
+              sleep 2
+            done
+            
+            echo "❌ Health check failed"
+            docker-compose logs api
+            exit 1
+          ENDSSH
+
+      - name: Verify deployment
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          echo "🔍 Verifying deployment..."
+          curl -f http://$HOST/health || exit 1
+          curl -f http://$HOST/api/stats || exit 1
+          echo "✅ All endpoints responding"
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "🎉 Deployment to EC2 completed successfully!"
+          echo "🌐 API URL: http://${{ secrets.EC2_HOST }}"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed! Check logs above."
+          exit 1

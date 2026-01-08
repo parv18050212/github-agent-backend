@@ -1,0 +1,70 @@
+import os
+import json
+from google import genai
+from google.genai import types
+from utils.repo_summary import generate_repo_summary
+
+def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
+    # 1. Validation
+    if not api_key:
+        return {
+            "project_name": "Unknown", 
+            "description": "No Gemini API Key provided.",
+            "features": [],
+            "score": 0,
+            "feedback": "Skipped"
+        }
+
+    print("      🧠 Generating Codebase Summary for Gemini 2.5...")
+    context = generate_repo_summary(repo_path)
+    
+    # 2. Configure Client (New SDK)
+    try:
+        client = genai.Client(api_key=api_key)
+        
+        prompt = f"""
+        You are a Senior CTO judging a Hackathon. Analyze the following codebase summary.
+        
+        OUTPUT MUST BE VALID JSON ONLY. NO MARKDOWN.
+        
+        JSON Schema:
+        {{
+            "project_name": "inferred name",
+            "description": "1 sentence summary",
+            "features": ["list", "of", "features"],
+            "tech_stack_observed": ["list", "of", "libs"],
+            "implementation_score": (0-100 int),
+            "positive_feedback": "string",
+            "constructive_feedback": "string",
+            "verdict": "Production Ready / Prototype / Broken"
+        }}
+
+        CODEBASE CONTEXT:
+        {context}
+        """
+
+        # 3. Call API (Updated Method)
+        print("      🚀 Sending to Gemini 2.5 Flash...")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"  # Native JSON mode
+            )
+        )
+        
+        # 4. Parse Response
+        # The new SDK handles JSON parsing automatically if configured, 
+        # but we can also parse the text directly to be safe.
+        if response.text:
+            return json.loads(response.text)
+        return {}
+
+    except Exception as e:
+        print(f"      ❌ Gemini Error: {e}")
+        return {
+            "project_name": "Error",
+            "description": f"AI Analysis Failed: {str(e)}",
+            "features": [],
+            "score": 0
+        }
