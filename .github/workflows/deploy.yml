@@ -67,16 +67,16 @@ jobs:
             echo "=========================================="
             
             # Check if repo exists, clone or pull
-            if [ -d "/home/ec2-user/repo-analyzer" ]; then
+            if [ -d "/home/ec2-user/proj-github-agent" ]; then
               echo "Updating existing repository..."
-              cd /home/ec2-user/repo-analyzer
+              cd /home/ec2-user/proj-github-agent
               git fetch origin
               git reset --hard origin/main
             else
               echo "Cloning repository..."
               cd /home/ec2-user
-              git clone https://github.com/${{ github.repository }}.git repo-analyzer
-              cd repo-analyzer
+              git clone https://github.com/${{ github.repository }}.git proj-github-agent
+              cd proj-github-agent
             fi
             
             # Setup virtual environment
@@ -89,7 +89,7 @@ jobs:
             # Install dependencies
             echo "Installing dependencies..."
             pip install --upgrade pip
-            pip install -r requirements.txt
+            pip install -r requirements.txt --no-cache-dir
             
             # Create .env file
             echo "Configuring environment..."
@@ -112,24 +112,24 @@ jobs:
             # Create reports directory
             mkdir -p reports
             
-            # Stop existing process if running
-            echo "Stopping existing server..."
-            pkill -f "uvicorn main:app" || true
-            sleep 2
+            # Update systemd service
+            echo "Updating systemd service..."
+            sudo cp repo-analyzer.service /etc/systemd/system/
+            sudo systemctl daemon-reload
             
-            # Start server with nohup
-            echo "Starting server..."
-            source venv/bin/activate
-            nohup venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2 > server.log 2>&1 &
+            # Restart service
+            echo "Restarting service..."
+            sudo systemctl restart repo-analyzer
             
-            # Wait for server to start
-            echo "Waiting for server to start..."
+            # Wait for service to start
+            echo "Waiting for service to start..."
             sleep 5
             
             # Health check
             for i in {1..30}; do
               if curl -f http://localhost:8000/health > /dev/null 2>&1; then
                 echo "Server is healthy!"
+                sudo systemctl status repo-analyzer
                 exit 0
               fi
               echo "Waiting... ($i/30)"
@@ -137,7 +137,8 @@ jobs:
             done
             
             echo "Health check failed!"
-            cat server.log
+            sudo systemctl status repo-analyzer
+            sudo journalctl -u repo-analyzer -n 50 --no-pager
             exit 1
           ENDSSH
 
