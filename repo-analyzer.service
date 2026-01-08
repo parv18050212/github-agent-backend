@@ -6,7 +6,8 @@ After=network.target
 Type=simple
 User=ec2-user
 WorkingDirectory=/home/ec2-user/proj-github-agent
-Environment="PATH=/home/ec2-user/proj-github-agent/venv/bin"
+Environment="PATH=/home/ec2-user/proj-github-agent/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="GIT_PYTHON_GIT_EXECUTABLE=/usr/bin/git"
 ExecStart=/home/ec2-user/proj-github-agent/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
