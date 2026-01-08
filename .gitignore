@@ -59,7 +59,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Reports (generated)
-report/
+reports/
 *.csv
 *.json
 
