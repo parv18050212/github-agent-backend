@@ -85,7 +85,7 @@ jobs:
           USER: ${{ secrets.EC2_USER }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
         run: |
           # Setup SSH
@@ -106,7 +106,7 @@ jobs:
             cat > .env << EOF
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
           CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
           ENVIRONMENT=production
           LOG_LEVEL=info
