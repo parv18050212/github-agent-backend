@@ -101,20 +101,20 @@ jobs:
             
             echo "Configuring environment..."
             cat > .env << EOF
-SUPABASE_URL=${{ secrets.SUPABASE_URL }}
-SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
-GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-GH_API_KEY=${{ secrets.GH_API_KEY }}
-CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
-APP_ENV=production
-ENVIRONMENT=production
-LOG_LEVEL=info
-REPORT_DIR=reports
-EMBEDDING_PROVIDER=sentence-transformers
-EMBEDDING_MODEL=all-MiniLM-L6-v2
-DISABLE_EXTERNAL_LLM=false
-HTTP_TIMEOUT=30
-EOF
+            SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+            SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            GH_API_KEY=${{ secrets.GH_API_KEY }}
+            CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
+            APP_ENV=production
+            ENVIRONMENT=production
+            LOG_LEVEL=info
+            REPORT_DIR=reports
+            EMBEDDING_PROVIDER=sentence-transformers
+            EMBEDDING_MODEL=all-MiniLM-L6-v2
+            DISABLE_EXTERNAL_LLM=false
+            HTTP_TIMEOUT=30
+            EOF
             
             mkdir -p reports
             
