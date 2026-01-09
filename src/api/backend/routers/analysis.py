@@ -19,6 +19,7 @@ from src.api.backend.schemas import (
 )
 from src.api.backend.crud import ProjectCRUD, AnalysisJobCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
 from src.api.backend.background import run_analysis_job
+from src.api.backend.utils.cache import cache, RedisCache
 
 router = APIRouter(prefix="/api", tags=["Analysis"])
 
@@ -104,6 +105,12 @@ async def get_analysis_status(job_id: UUID):
     Returns current status, progress (0-100), and current stage
     """
     try:
+        # Check cache for completed jobs
+        cache_key = f"hackeval:analysis:{job_id}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return AnalysisStatusResponse(**cached_result)
+        
         job = AnalysisJobCRUD.get_job(job_id)
         
         if not job:
@@ -112,7 +119,7 @@ async def get_analysis_status(job_id: UUID):
                 detail="Analysis job not found"
             )
         
-        return AnalysisStatusResponse(
+        result = AnalysisStatusResponse(
             job_id=UUID(job["id"]),
             project_id=UUID(job["project_id"]),
             status=job["status"],
@@ -122,6 +129,12 @@ async def get_analysis_status(job_id: UUID):
             started_at=job["started_at"],
             completed_at=job.get("completed_at")
         )
+        
+        # Cache completed/failed jobs for longer
+        if job["status"] in ["completed", "failed"]:
+            cache.set(cache_key, result.model_dump(mode="json"), RedisCache.TTL_MEDIUM)
+        
+        return result
         
     except HTTPException:
         raise
@@ -162,6 +175,12 @@ async def get_analysis_result(job_id: UUID):
     Only available when analysis is completed.
     """
     try:
+        # Check cache first
+        cache_key = f"hackeval:analysis-result:{job_id}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
+        
         # Get job
         job = AnalysisJobCRUD.get_job(job_id)
         
@@ -194,7 +213,7 @@ async def get_analysis_result(job_id: UUID):
         team_members = TeamMemberCRUD.get_team_members(project_id)
         
         # Build response
-        return AnalysisResultResponse(
+        result = AnalysisResultResponse(
             project_id=project_id,
             repo_url=project["repo_url"],
             team_name=project.get("team_name"),
@@ -241,6 +260,11 @@ async def get_analysis_result(job_id: UUID):
             viz_url=project.get("viz_url"),
             report_json=project.get("report_json")
         )
+        
+        # Cache the result for 5 minutes (completed results don't change)
+        cache.set(cache_key, result.model_dump(mode="json"), RedisCache.TTL_MEDIUM)
+        
+        return result
         
     except HTTPException:
         raise

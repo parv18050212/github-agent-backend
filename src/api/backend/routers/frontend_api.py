@@ -265,6 +265,12 @@ async def get_dashboard_stats():
 async def get_available_technologies():
     """Get list of all technologies used across projects"""
     try:
+        # Check cache
+        cache_key = "hackeval:tech-stacks"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
+        
         projects, _ = ProjectCRUD.list_projects()
         
         tech_count = {}
@@ -279,6 +285,9 @@ async def get_available_technologies():
         tech_list = [{"name": name, "count": count} 
                      for name, count in tech_count.items()]
         tech_list = sorted(tech_list, key=lambda x: x["count"], reverse=True)
+        
+        # Cache for 5 minutes
+        cache.set(cache_key, tech_list, RedisCache.TTL_MEDIUM)
         
         return tech_list
         
@@ -299,6 +308,9 @@ async def delete_project(project_id: str):
         success = ProjectCRUD.delete_project(project_id)
         if not success:
             raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Invalidate caches
+        cache.invalidate_project(project_id)
         
         return {"message": "Project deleted successfully"}
         
