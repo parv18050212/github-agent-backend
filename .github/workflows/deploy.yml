@@ -6,6 +6,11 @@ on:
       - main
       - production
 
+  pull_request:
+    branches:
+      - main
+      - production
+
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -24,7 +29,7 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_tests != 'true')
 
     steps:
       - name: Checkout code
@@ -44,7 +49,6 @@ jobs:
       - name: Run unit tests
         run: |
           pytest tests/unit/ -v --tb=short
-        continue-on-error: false
 
       - name: Test import
         run: |
@@ -53,14 +57,9 @@ jobs:
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
-    needs: [test]
     if: |
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production') &&
-      (
-      needs.test.result == 'success' ||
-      needs.test.result == 'skipped' ||
-      contains(github.event.head_commit.message, '[skip-tests]')
-      )
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production')
 
     steps:
       - name: Deploy to EC2
@@ -82,28 +81,23 @@ jobs:
             echo "=========================================="
             
             if [ -d "/home/ec2-user/proj-github-agent" ]; then
-              echo "Updating existing repository..."
               cd /home/ec2-user/proj-github-agent
               git fetch origin
               git reset --hard origin/main
             else
-              echo "Cloning repository..."
               cd /home/ec2-user
               git clone https://github.com/${{ github.repository }}.git proj-github-agent
               cd proj-github-agent
             fi
             
-            echo "Setting up Python environment..."
             if [ ! -d "venv" ]; then
               python3 -m venv venv
             fi
             source venv/bin/activate
             
-            echo "Installing dependencies..."
             pip install --upgrade pip
             pip install -r requirements.txt --no-cache-dir
             
-            echo "Configuring environment..."
             cat > .env << EOF
             SUPABASE_URL=${{ secrets.SUPABASE_URL }}
             SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
@@ -123,28 +117,21 @@ jobs:
             
             mkdir -p reports
             
-            echo "Updating systemd service..."
             sudo cp repo-analyzer.service /etc/systemd/system/
             sudo systemctl daemon-reload
-            
-            echo "Restarting service..."
             sudo systemctl restart repo-analyzer
             
-            echo "Waiting for service to start..."
             sleep 5
             
             for i in {1..30}; do
               if curl -f http://localhost:8000/health > /dev/null 2>&1; then
                 echo "Server is healthy!"
-                sudo systemctl status repo-analyzer
                 exit 0
               fi
-              echo "Waiting... ($i/30)"
               sleep 2
             done
             
-            echo "Health check failed!"
-            sudo systemctl status repo-analyzer
+            echo "Health check failed"
             sudo journalctl -u repo-analyzer -n 50 --no-pager
             exit 1
           ENDSSH
@@ -153,17 +140,5 @@ jobs:
         env:
           HOST: ${{ secrets.EC2_HOST }}
         run: |
-          echo "Verifying deployment..."
-          sleep 5
-          curl -f http://$HOST:8000/health || exit 1
-          curl -f http://$HOST:8000/api/stats || exit 1
-          echo "All endpoints responding!"
-
-      - name: Deployment summary
-        if: success()
-        run: |
-          echo "=========================================="
-          echo "Deployment successful!"
-          echo "API URL: http://${{ secrets.EC2_HOST }}:8000"
-          echo "Docs: http://${{ secrets.EC2_HOST }}:8000/docs"
-          echo "=========================================="
+          curl -f http://$HOST:8000/health
+          curl -f http://$HOST:8000/api/stats
