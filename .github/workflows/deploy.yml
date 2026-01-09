@@ -5,7 +5,17 @@ on:
     branches:
       - main
       - production
-  workflow_dispatch: # Allow manual trigger
+
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Skip running tests"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 env:
   DEPLOY_PATH: /home/ubuntu/repo-analyzer
@@ -14,7 +24,8 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_tests != 'true' }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,9 +53,11 @@ jobs:
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
-    
+    needs: [test]
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production') &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+
     steps:
       - name: Deploy to EC2
         env:
@@ -52,13 +65,11 @@ jobs:
           HOST: ${{ secrets.EC2_HOST }}
           USER: ${{ secrets.EC2_USER }}
         run: |
-          # Setup SSH
           mkdir -p ~/.ssh
           echo "$PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H $HOST >> ~/.ssh/known_hosts
 
-          # Deploy via SSH
           ssh -i ~/.ssh/deploy_key $USER@$HOST << 'ENDSSH'
             set -e
             
@@ -66,7 +77,6 @@ jobs:
             echo "Deploying Repository Analyzer"
             echo "=========================================="
             
-            # Check if repo exists, clone or pull
             if [ -d "/home/ec2-user/proj-github-agent" ]; then
               echo "Updating existing repository..."
               cd /home/ec2-user/proj-github-agent
@@ -79,53 +89,45 @@ jobs:
               cd proj-github-agent
             fi
             
-            # Setup virtual environment
             echo "Setting up Python environment..."
             if [ ! -d "venv" ]; then
               python3 -m venv venv
             fi
             source venv/bin/activate
             
-            # Install dependencies
             echo "Installing dependencies..."
             pip install --upgrade pip
             pip install -r requirements.txt --no-cache-dir
             
-            # Create .env file
             echo "Configuring environment..."
             cat > .env << EOF
-          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
-          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-          GH_API_KEY=${{ secrets.GH_API_KEY }}
-          CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
-          APP_ENV=production
-          ENVIRONMENT=production
-          LOG_LEVEL=info
-          REPORT_DIR=reports
-          EMBEDDING_PROVIDER=sentence-transformers
-          EMBEDDING_MODEL=all-MiniLM-L6-v2
-          DISABLE_EXTERNAL_LLM=false
-          HTTP_TIMEOUT=30
-          EOF
+SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+GH_API_KEY=${{ secrets.GH_API_KEY }}
+CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
+APP_ENV=production
+ENVIRONMENT=production
+LOG_LEVEL=info
+REPORT_DIR=reports
+EMBEDDING_PROVIDER=sentence-transformers
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+DISABLE_EXTERNAL_LLM=false
+HTTP_TIMEOUT=30
+EOF
             
-            # Create reports directory
             mkdir -p reports
             
-            # Update systemd service
             echo "Updating systemd service..."
             sudo cp repo-analyzer.service /etc/systemd/system/
             sudo systemctl daemon-reload
             
-            # Restart service
             echo "Restarting service..."
             sudo systemctl restart repo-analyzer
             
-            # Wait for service to start
             echo "Waiting for service to start..."
             sleep 5
             
-            # Health check
             for i in {1..30}; do
               if curl -f http://localhost:8000/health > /dev/null 2>&1; then
                 echo "Server is healthy!"
