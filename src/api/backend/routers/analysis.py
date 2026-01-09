@@ -132,6 +132,18 @@ async def get_analysis_status(job_id: UUID):
         )
 
 
+# Alias endpoint for frontend compatibility
+@router.get(
+    "/analysis/{job_id}",
+    response_model=AnalysisStatusResponse,
+    responses={404: {"model": ErrorResponse}}
+)
+async def get_analysis_status_alias(job_id: UUID):
+    """Alias endpoint for /analysis-status/{job_id} for frontend compatibility"""
+    return await get_analysis_status(job_id)
+
+
+
 @router.get(
     "/analysis-result/{job_id}",
     response_model=AnalysisResultResponse,
