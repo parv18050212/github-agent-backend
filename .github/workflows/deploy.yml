@@ -110,6 +110,7 @@ jobs:
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             GH_API_KEY=${{ secrets.GH_API_KEY }}
             CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
+            REDIS_URL=${{ secrets.REDIS_URL }}
             APP_ENV=production
             ENVIRONMENT=production
             LOG_LEVEL=info
