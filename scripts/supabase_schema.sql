@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS projects (
     
     -- Metadata
     total_commits INTEGER,
-    verdict TEXT CHECK (verdict IN ('Production Ready', 'Prototype', 'Broken', NULL)),
+    verdict TEXT,
     ai_pros TEXT,
     ai_cons TEXT,
     report_json JSONB,

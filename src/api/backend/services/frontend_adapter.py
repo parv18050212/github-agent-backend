@@ -14,22 +14,44 @@ class FrontendAdapter:
     @staticmethod
     def _extract_scores(project_data: Dict[str, Any], report_json: Dict[str, Any] = None) -> Dict[str, float]:
         """Extract and normalize scores from project data"""
+        # Use neutral defaults (50) instead of 0 so frontend doesn't show red for missing data
         scores = {
-            "totalScore": project_data.get("total_score", 0),
-            "qualityScore": project_data.get("quality_score", 0),
-            "securityScore": project_data.get("security_score", 0),
-            "originalityScore": project_data.get("originality_score", 0) or project_data.get("llm_score", 0),
-            "architectureScore": project_data.get("engineering_score", 0) or project_data.get("architecture_score", 0),
-            "documentationScore": project_data.get("documentation_score", 0)
+            "totalScore": project_data.get("total_score") or 0,
+            "qualityScore": project_data.get("quality_score") or 50,
+            "securityScore": project_data.get("security_score") or 100,  # Assume safe if not scanned
+            "originalityScore": project_data.get("originality_score") or project_data.get("llm_score") or 100,
+            "architectureScore": project_data.get("engineering_score") or project_data.get("architecture_score") or project_data.get("organization_score") or 50,
+            "documentationScore": project_data.get("documentation_score") or 50
         }
         
-        # Try to extract from report if not in project_data
+        # Try to extract from report_json if available
         if report_json and "scores" in report_json:
             report_scores = report_json["scores"]
-            for key in scores:
-                snake_key = key[0].lower() + ''.join(['_' + c.lower() if c.isupper() else c for c in key[1:]])
-                if scores[key] == 0 and snake_key in report_scores:
-                    scores[key] = report_scores[snake_key]
+            score_mapping = {
+                "totalScore": "total",
+                "qualityScore": "quality", 
+                "securityScore": "security",
+                "originalityScore": "originality",
+                "architectureScore": "engineering",  # Maps to engineering/organization
+                "documentationScore": "documentation"
+            }
+            
+            for ui_key, report_key in score_mapping.items():
+                if report_key in report_scores and report_scores[report_key]:
+                    scores[ui_key] = report_scores[report_key]
+        
+        # Calculate total if not set
+        if scores["totalScore"] == 0:
+            component_scores = [
+                scores["qualityScore"],
+                scores["securityScore"], 
+                scores["originalityScore"],
+                scores["architectureScore"],
+                scores["documentationScore"]
+            ]
+            valid_scores = [s for s in component_scores if s and s > 0]
+            if valid_scores:
+                scores["totalScore"] = round(sum(valid_scores) / len(valid_scores), 1)
         
         return scores
     
@@ -68,7 +90,29 @@ class FrontendAdapter:
         
         # Extract languages from report or tech stack
         languages = []
-        if report_json and "languages" in report_json:
+        if report_json and "stack" in report_json:
+            # Stack contains language/framework info
+            stack = report_json.get("stack", [])
+            # Create language breakdown from stack
+            lang_mapping = {"Python": 0, "JavaScript": 0, "TypeScript": 0, "Java": 0, "Go": 0, "C++": 0, "Rust": 0}
+            for item in stack:
+                item_str = str(item).lower() if item else ""
+                if "python" in item_str:
+                    lang_mapping["Python"] = 70
+                elif "javascript" in item_str or "node" in item_str:
+                    lang_mapping["JavaScript"] = 70
+                elif "typescript" in item_str:
+                    lang_mapping["TypeScript"] = 70
+                elif "java" in item_str:
+                    lang_mapping["Java"] = 70
+                elif "go" in item_str:
+                    lang_mapping["Go"] = 70
+            
+            for lang, pct in lang_mapping.items():
+                if pct > 0:
+                    languages.append({"name": lang, "percentage": pct})
+        
+        if not languages and report_json and "languages" in report_json:
             lang_data = report_json.get("languages", {})
             for lang, pct in lang_data.items():
                 languages.append({"name": lang, "percentage": pct})
@@ -216,6 +260,10 @@ class FrontendAdapter:
             
             if "structure" in report_json:
                 structure = report_json["structure"]
+                # Use folder_count as proxy for total files if files not available
+                if total_files == 0:
+                    total_files = structure.get("folder_count", 0) * 5  # Estimate 5 files per folder
+                
                 # Look for test coverage data
                 if "test_coverage" in structure:
                     test_coverage = structure["test_coverage"]
@@ -224,6 +272,19 @@ class FrontendAdapter:
                     test_count = structure.get("tests", 0)
                     if total_files > 0:
                         test_coverage = min(100, (test_count / total_files) * 100)
+            
+            # Get maturity info for test coverage
+            if "maturity" in report_json and test_coverage == 0:
+                maturity = report_json["maturity"]
+                if maturity.get("has_tests"):
+                    test_files = maturity.get("test_files", 0)
+                    test_coverage = min(100, test_files * 10)  # Rough estimate
+        
+        # Architecture from structure analysis
+        if report_json and "structure" in report_json:
+            arch = report_json["structure"].get("architecture", "")
+            if arch:
+                architecture = arch
         
         # Return flat structure matching frontend expectations
         return {

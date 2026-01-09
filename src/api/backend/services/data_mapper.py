@@ -180,15 +180,36 @@ class DataMapper:
             
             judge = report.get("judge", {})
             verdict = judge.get("verdict", "Unknown")
+            ai_pros = judge.get("positive_feedback", "")
+            ai_cons = judge.get("constructive_feedback", "")
             
             # Map to actual database column names (user's schema)
             project_data = {
                 **scores,
                 "total_commits": report.get("total_commits", 0),
                 "verdict": verdict,
+                "ai_pros": ai_pros,
+                "ai_cons": ai_cons,
                 "status": "completed",
-                "analyzed_at": datetime.now().isoformat()
-                # Note: report_path and viz_path not set here, would need file storage
+                "analyzed_at": datetime.now().isoformat(),
+                # Store full report JSON for frontend adapter to use
+                "report_json": {
+                    "scores": report.get("scores", {}),
+                    "stack": report.get("stack", []),
+                    "files": report.get("files", []),
+                    "judge": report.get("judge", {}),
+                    "team": report.get("team", {}),
+                    "security": report.get("security", {}),
+                    "maturity": report.get("maturity", {}),
+                    "structure": report.get("structure", {}),
+                    "commit_details": report.get("commit_details", {}),
+                    "forensics": {
+                        "author_stats": report.get("team", {}),
+                        "total_commits": report.get("total_commits", 0),
+                        "daily_activity": report.get("commit_details", {}).get("daily_activity", {})
+                    },
+                    "repo_tree": report.get("repo_tree", "")
+                }
             }
             
             ProjectCRUD.update_project(project_id, project_data)
