@@ -56,6 +56,127 @@ async def get_project_detail(project_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects/{project_id}/tree")
+async def get_project_tree(project_id: str):
+    """Get repository structure tree"""
+    try:
+        # Check cache first
+        cache_key = f"hackeval:tree:{project_id}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
+        
+        # Get project
+        project = ProjectCRUD.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get tree from report_json
+        report_json = project.get("report_json", {})
+        print(f"[DEBUG] report_json keys: {list(report_json.keys())}")
+        tree_text = report_json.get("repo_tree", "Repository structure not available")
+        print(f"[DEBUG] repo_tree exists: {'repo_tree' in report_json}")
+        print(f"[DEBUG] tree_text length: {len(tree_text) if tree_text else 0}")
+        
+        result = {
+            "projectId": project_id,
+            "tree": tree_text
+        }
+        
+        # Cache for 1 hour (tree doesn't change)
+        cache.set(cache_key, result, RedisCache.TTL_LONG)
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/commits")
+async def get_project_commits(project_id: str, author: Optional[str] = Query(None)):
+    """Get detailed commit history with authors. If author is specified, return individual commits."""
+    try:
+        # Check cache first (skip cache for debugging)
+        cache_key = f"hackeval:commits:{project_id}:{author or 'all'}"
+        # cached_result = cache.get(cache_key)
+        # if cached_result:
+        #     return cached_result
+        
+        # Get project
+        project = ProjectCRUD.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get commit details from report_json
+        report_json = project.get("report_json", {})
+        
+        print(f"[DEBUG] report_json keys: {list(report_json.keys())}")
+        
+        # Try commit_details first (newer format), fall back to team field (older format)
+        commit_details = report_json.get("commit_details", {})
+        print(f"[DEBUG] commit_details keys: {list(commit_details.keys())}")
+        
+        author_stats = commit_details.get("author_stats", {})
+        
+        # Fallback: check if data is in "team" field (this is where agent.py stores it)
+        if not author_stats:
+            author_stats = report_json.get("team", {})
+        
+        # If author is specified, return their individual commits
+        if author:
+            all_commits = commit_details.get("all_commits", [])
+            print(f"[DEBUG] Total commits in DB: {len(all_commits)}")
+            print(f"[DEBUG] Filtering for author: {author}")
+            author_commits = [c for c in all_commits if c["author"] == author]
+            print(f"[DEBUG] Found {len(author_commits)} commits for {author}")
+            # Sort by date descending (newest first)
+            author_commits.sort(key=lambda x: x["date"], reverse=True)
+            
+            result = {
+                "projectId": project_id,
+                "author": author,
+                "commits": author_commits
+            }
+        else:
+            # Return aggregated stats for all authors
+            print(f"[DEBUG] Project {project_id}: Found {len(author_stats)} authors")
+            print(f"[DEBUG] Authors: {list(author_stats.keys())}")
+            
+            commits = []
+            for author_name, stats in author_stats.items():
+                commits.append({
+                    "author": author_name,
+                    "commits": stats.get("commits", 0),
+                    "linesChanged": stats.get("lines_changed", 0),
+                    "activeDays": stats.get("active_days_count", 0),
+                    "topFileTypes": stats.get("top_file_types", "")
+                })
+            
+            # Sort by commits descending
+            commits.sort(key=lambda x: x["commits"], reverse=True)
+            
+            result = {
+                "projectId": project_id,
+                "totalCommits": commit_details.get("total_commits") or report_json.get("total_commits", 0),
+                "authors": commits
+            }
+        
+        # Cache for 1 hour
+        cache.set(cache_key, result, RedisCache.TTL_LONG)
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Commits endpoint failed: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/projects")
 async def list_projects(
     status: Optional[str] = Query(None),
@@ -252,10 +373,67 @@ async def get_dashboard_stats():
             "totalSecurityIssues": total_issues
         }
         
-        # Cache for 30 seconds
-        cache.set(cache_key, result, RedisCache.TTL_SHORT)
+        # Cache for 5 minutes
+        cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
         
         return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/projects/clear-all")
+async def clear_all_projects():
+    """Delete all projects from database (dangerous operation)"""
+    try:
+        from ..crud import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # Get all projects
+        projects, total = ProjectCRUD.list_projects()
+        
+        deleted_count = 0
+        failed_count = 0
+        
+        for project in projects:
+            try:
+                project_id = project.get("id")
+                
+                # Delete related records first to avoid FK constraint violations
+                # Delete tech_stack
+                supabase.table("tech_stack").delete().eq("project_id", project_id).execute()
+                
+                # Delete team_members
+                supabase.table("team_members").delete().eq("project_id", project_id).execute()
+                
+                # Delete analysis_jobs
+                supabase.table("analysis_jobs").delete().eq("project_id", project_id).execute()
+                
+                # Delete project
+                ProjectCRUD.delete_project(project_id)
+                
+                # Invalidate caches
+                cache.delete(f"hackeval:project:{project_id}")
+                cache.delete(f"hackeval:tree:{project_id}")
+                cache.delete(f"hackeval:commits:{project_id}")
+                
+                deleted_count += 1
+            except Exception as e:
+                print(f"Failed to delete project {project_id}: {e}")
+                failed_count += 1
+        
+        # Clear all list caches
+        cache.delete("hackeval:projects:*")
+        cache.delete("hackeval:leaderboard")
+        cache.delete("hackeval:stats")
+        cache.delete("hackeval:tech-stacks")
+        
+        return {
+            "success": True,
+            "deleted": deleted_count,
+            "failed": failed_count,
+            "message": f"Cleared {deleted_count} projects from database"
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -303,6 +481,7 @@ async def delete_project(project_id: str):
         TechStackCRUD.delete_by_project(project_id)
         IssueCRUD.delete_by_project(project_id)
         TeamMemberCRUD.delete_by_project(project_id)
+        AnalysisJobCRUD.delete_by_project(project_id)
         
         # Delete project
         success = ProjectCRUD.delete_project(project_id)
@@ -326,9 +505,14 @@ async def batch_upload(
     background_tasks: BackgroundTasks = None
 ):
     """
-    Batch upload projects from CSV file
+    Batch upload projects from CSV file - SEQUENTIAL PROCESSING
     Expected CSV columns: teamName, repoUrl, description (optional)
+    
+    Returns batchId for tracking progress via /api/batch/{batch_id}/status
     """
+    from src.api.backend.crud import BatchCRUD
+    from src.api.backend.background import run_batch_sequential
+    
     try:
         # Validate file type
         if not file.filename.endswith('.csv'):
@@ -351,8 +535,8 @@ async def batch_upload(
                 detail="CSV missing required columns: teamName/team_name, repoUrl/repo_url"
             )
         
-        # Process each row
-        queued_jobs = []
+        # First pass: validate all rows and create projects/jobs
+        repos_to_process = []
         failed_rows = []
         
         for row_num, row in enumerate(csv_reader, start=2):  # Start at 2 (header is row 1)
@@ -401,22 +585,13 @@ async def batch_upload(
                 job = AnalysisJobCRUD.create_job(project_id)
                 job_id = UUID(job["id"])
                 
-                # Queue analysis
-                if background_tasks:
-                    background_tasks.add_task(
-                        run_analysis_job,
-                        project_id=str(project_id),
-                        job_id=str(job_id),
-                        repo_url=repo_url,
-                        team_name=team_name
-                    )
-                
-                queued_jobs.append({
+                # Add to processing queue
+                repos_to_process.append({
                     "row": row_num,
-                    "teamName": team_name,
-                    "repoUrl": repo_url,
-                    "jobId": str(job_id),
-                    "projectId": str(project_id)
+                    "team_name": team_name,
+                    "repo_url": repo_url,
+                    "project_id": str(project_id),
+                    "job_id": str(job_id)
                 })
                 
             except Exception as e:
@@ -427,18 +602,90 @@ async def batch_upload(
                     "error": str(e)
                 })
         
+        # Create batch record for tracking
+        batch = None
+        batch_id = None
+        if repos_to_process:
+            batch = BatchCRUD.create_batch(total_repos=len(repos_to_process))
+            batch_id = batch["id"] if batch else None
+            
+            # Queue SINGLE background task for sequential processing
+            if background_tasks and batch_id:
+                background_tasks.add_task(
+                    run_batch_sequential,
+                    batch_id=batch_id,
+                    repos=repos_to_process
+                )
+        
+        # Build response for frontend
+        queued_jobs = [
+            {
+                "row": r["row"],
+                "teamName": r["team_name"],
+                "repoUrl": r["repo_url"],
+                "jobId": r["job_id"],
+                "projectId": r["project_id"]
+            }
+            for r in repos_to_process
+        ]
+        
         return {
-            "success": len(queued_jobs),
+            "batchId": batch_id,  # NEW: for tracking
+            "success": len(repos_to_process),
             "failed": len(failed_rows),
-            "total": len(queued_jobs) + len(failed_rows),
+            "total": len(repos_to_process) + len(failed_rows),
             "queued": queued_jobs,
             "errors": failed_rows,
-            "message": f"Successfully queued {len(queued_jobs)} projects, {len(failed_rows)} failed"
+            "message": f"Successfully queued {len(repos_to_process)} projects for sequential processing, {len(failed_rows)} failed"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"\n❌ BATCH UPLOAD ERROR: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/batch/{batch_id}/status")
+async def get_batch_status(batch_id: str):
+    """
+    Get the current status of a batch upload - for live progress tracking
+    
+    Returns:
+        - status: pending/processing/completed/failed
+        - total: total number of repos in batch
+        - completed: number of completed repos
+        - failed: number of failed repos
+        - currentIndex: which repo is currently being analyzed (1-indexed)
+        - currentRepo: URL of the repo being analyzed
+        - currentTeam: team name of the repo being analyzed
+    """
+    from src.api.backend.crud import BatchCRUD
+    
+    try:
+        batch = BatchCRUD.get_batch(batch_id)
+        
+        if not batch:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        
+        return {
+            "batchId": batch_id,
+            "status": batch.get("status", "pending"),
+            "total": batch.get("total_repos", 0),
+            "completed": batch.get("completed_repos", 0),
+            "failed": batch.get("failed_repos", 0),
+            "currentIndex": batch.get("current_index", 0),
+            "currentRepo": batch.get("current_repo_url"),
+            "currentTeam": batch.get("current_repo_team"),
+            "createdAt": batch.get("created_at"),
+            "completedAt": batch.get("completed_at"),
+            "errorMessage": batch.get("error_message")
         }
         
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+

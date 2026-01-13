@@ -200,7 +200,11 @@ def node_aggregator(ctx):
             })
             
     detailed_files.sort(key=lambda x: x['risk'], reverse=True)
-    top_ai = max([f['ai_pct'] for f in detailed_files]) if detailed_files else 0.0
+    
+    # Calculate overall AI percentage from all files (not just risky ones)
+    all_ai_scores = [llm.get(f, 0.0) * 100 for f in llm.keys()]
+    overall_ai_percentage = round(sum(all_ai_scores) / len(all_ai_scores), 2) if all_ai_scores else 0.0
+    top_ai = max(all_ai_scores) if all_ai_scores else 0.0
     
     # --- Scores ---
     # Use reasonable defaults (50 = neutral) instead of 0 when data is missing
@@ -232,6 +236,7 @@ def node_aggregator(ctx):
             "team": comm.get("author_stats", {}),
             "total_commits": comm.get("total_commits", 0),
             "files": detailed_files,
+            "llm_detection": {"overall_percentage": overall_ai_percentage},  # Add AI detection summary
             "security": sec,
             "judge": judge,
             "maturity": mat,

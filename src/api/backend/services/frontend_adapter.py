@@ -16,12 +16,12 @@ class FrontendAdapter:
         """Extract and normalize scores from project data"""
         # Use neutral defaults (50) instead of 0 so frontend doesn't show red for missing data
         scores = {
-            "totalScore": project_data.get("total_score") or 0,
-            "qualityScore": project_data.get("quality_score") or 50,
-            "securityScore": project_data.get("security_score") or 100,  # Assume safe if not scanned
-            "originalityScore": project_data.get("originality_score") or project_data.get("llm_score") or 100,
-            "architectureScore": project_data.get("engineering_score") or project_data.get("architecture_score") or project_data.get("organization_score") or 50,
-            "documentationScore": project_data.get("documentation_score") or 50
+            "totalScore": round(project_data.get("total_score") or 0, 2),
+            "qualityScore": round(project_data.get("quality_score") or 50, 2),
+            "securityScore": round(project_data.get("security_score") or 100, 2),  # Assume safe if not scanned
+            "originalityScore": round(project_data.get("originality_score") or project_data.get("llm_score") or 100, 2),
+            "architectureScore": round(project_data.get("engineering_score") or project_data.get("architecture_score") or project_data.get("organization_score") or 50, 2),
+            "documentationScore": round(project_data.get("documentation_score") or 50, 2)
         }
         
         # Try to extract from report_json if available
@@ -238,12 +238,16 @@ class FrontendAdapter:
                 
                 # Parse strengths (from positive feedback)
                 if positive:
-                    strengths = [s.strip() for s in positive.split(".") if s.strip() and len(s.strip()) > 10]
+                    # Try splitting by period, newline, or bullet points
+                    parts = positive.replace("\n-", ".").replace("\n*", ".").replace("\n", ". ").split(".")
+                    strengths = [s.strip() for s in parts if s.strip() and len(s.strip()) > 10]
                     strengths = strengths[:5]  # Top 5
                 
                 # Parse improvements (from constructive feedback)
                 if constructive:
-                    improvements = [s.strip() for s in constructive.split(".") if s.strip() and len(s.strip()) > 10]
+                    # Try splitting by period, newline, or bullet points
+                    parts = constructive.replace("\n-", ".").replace("\n*", ".").replace("\n", ". ").split(".")
+                    improvements = [s.strip() for s in parts if s.strip() and len(s.strip()) > 10]
                     improvements = improvements[:5]  # Top 5
         
         # Calculate project stats

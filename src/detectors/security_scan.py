@@ -4,22 +4,26 @@ from typing import Dict, Any, List
 
 # Patterns for common high-risk secrets
 PATTERNS = {
-    "AWS Access Key": r"(?<![A-Z0-9])[A-Z0-9]{20}(?![A-Z0-9])",  # Basic heuristic
+    "AWS Access Key": r"(?<![A-Z0-9])[A-Z0-9]{20}(?![A-Z0-9])",
     "AWS Secret": r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])",
     "Google API Key": r"AIza[0-9A-Za-z\\-_]{35}",
-    "Generic Private Key": r"-----BEGIN PRIVATE KEY-----",
+    "Generic Private Key": r"-----BEGIN (PRIVATE|RSA PRIVATE) KEY-----",
     "OpenAI API Key": r"sk-[a-zA-Z0-9]{48}",
-    "Hardcoded Password": r"(password|passwd|pwd)\s*[:=]\s*['\"][^'\"]{3,}['\"]",
-    "DB Connection String": r"mysql://|postgresql://|mongodb://"
+    "GitHub Token": r"gh[pousr]_[A-Za-z0-9]{36}",
+    "Stripe Key": r"sk_live_[0-9a-zA-Z]{24}",
+    "Hardcoded Password": r"(password|passwd|pwd|secret)\s*[:=]\s*['\"][^'\"]{3,}['\"]" ,
+    "DB Connection String": r"(mysql|postgresql|mongodb)://[^\s]*",
+    "JWT Token": r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*"
 }
 
-# Files to skip (example configs, docs, tests often have placeholder keys)
+# Files to skip (only skip obvious example/template files and binaries)
 SKIP_FILES = (
-    ".env.example", ".env.sample", "example.env", "config.example",
-    ".png", ".jpg", ".lock", ".pyc", ".md", ".txt", ".rst"
+    ".env.example", ".env.sample", ".env.template", "example.env", "config.example",
+    ".png", ".jpg", ".gif", ".ico", ".lock", ".pyc", ".pdf"
 )
 
-SKIP_FOLDERS = ("test", "tests", "__tests__", "docs", "documentation", "examples", "node_modules", ".git")
+# Only skip build artifacts and dependencies, not test/docs folders
+SKIP_FOLDERS = ("node_modules", ".git", "dist", "build", "__pycache__", ".venv", "venv")
 
 def scan_for_secrets(repo_path: str) -> Dict[str, Any]:
     leaks = []

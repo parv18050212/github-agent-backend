@@ -7,6 +7,7 @@ from uuid import UUID
 from datetime import datetime
 from src.api.backend.crud import ProjectCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
 from src.api.backend.utils.cache import cache
+from src.api.backend.utils.logger import batch_logger
 
 
 class DataMapper:
@@ -199,6 +200,9 @@ class DataMapper:
             
             # Try to add report_json (may fail if too large or invalid)
             try:
+                # Get full commit details with all commits
+                commit_details = report.get("commit_details", {})
+                
                 report_json = {
                     "scores": report.get("scores", {}),
                     "stack": report.get("stack", []),
@@ -208,6 +212,9 @@ class DataMapper:
                     "security": report.get("security", {}),
                     "maturity": report.get("maturity", {}),
                     "structure": report.get("structure", {}),
+                    "repo_tree": report.get("repo_tree", ""),  # Add repository tree structure
+                    "total_commits": report.get("total_commits", 0),
+                    "commit_details": commit_details,  # Include full commit details with all_commits
                     "forensics": {
                         "author_stats": report.get("team", {}),
                         "total_commits": report.get("total_commits", 0)
@@ -215,59 +222,59 @@ class DataMapper:
                 }
                 project_data["report_json"] = report_json
             except Exception as json_err:
-                print(f"      ⚠️ Could not build report_json: {json_err}")
+                batch_logger.warning(f"Could not build report_json: {json_err}")
             
             # Try saving with report_json first
-            print(f"      📝 Saving project data for {project_id}...")
+            batch_logger.info(f"Saving project data for {project_id}...")
             try:
                 ProjectCRUD.update_project(project_id, project_data)
-                print(f"      ✅ Project data saved successfully")
+                batch_logger.info(f"Project data saved successfully")
             except Exception as save_err:
-                print(f"      ⚠️ Save with report_json failed: {save_err}")
+                batch_logger.warning(f"Save with report_json failed: {save_err}")
                 # Retry without report_json
                 if "report_json" in project_data:
                     del project_data["report_json"]
-                print(f"      🔄 Retrying without report_json...")
+                batch_logger.info(f"Retrying without report_json...")
                 ProjectCRUD.update_project(project_id, project_data)
-                print(f"      ✅ Project data saved (without report_json)")
+                batch_logger.info(f"Project data saved (without report_json)")
             
             # 2. Save tech stack
             try:
                 tech_stack = DataMapper.map_tech_stack(report)
                 if tech_stack:
-                    print(f"      📝 Saving {len(tech_stack)} tech stack items...")
+                    batch_logger.info(f"Saving {len(tech_stack)} tech stack items...")
                     TechStackCRUD.add_technologies(project_id, tech_stack)
             except Exception as e:
-                print(f"      ⚠️ Failed to save tech stack: {e}")
+                batch_logger.error(f"Failed to save tech stack: {e}")
             
             # 3. Save issues  
             try:
                 issues = DataMapper.map_issues(report, project_id)
                 if issues:
-                    print(f"      📝 Saving {len(issues)} issues...")
+                    batch_logger.info(f"Saving {len(issues)} issues...")
                     IssueCRUD.add_issues(project_id, issues)
             except Exception as e:
-                print(f"      ⚠️ Failed to save issues: {e}")
+                batch_logger.error(f"Failed to save issues: {e}")
             
             # 4. Save team members
             try:
                 team_members = DataMapper.map_team_members(report)
                 if team_members:
-                    print(f"      📝 Saving {len(team_members)} team members...")
+                    batch_logger.info(f"Saving {len(team_members)} team members...")
                     TeamMemberCRUD.add_members(project_id, team_members)
             except Exception as e:
-                print(f"      ⚠️ Failed to save team members: {e}")
+                batch_logger.error(f"Failed to save team members: {e}")
             
             # 5. Invalidate cache for this project
             try:
                 cache.invalidate_project(str(project_id))
-                print(f"      🗑️ Cache invalidated for project {project_id}")
+                batch_logger.info(f"Cache invalidated for project {project_id}")
             except Exception as e:
-                print(f"      ⚠️ Failed to invalidate cache: {e}")
+                batch_logger.warning(f"Failed to invalidate cache: {e}")
             
             return True
             
         except Exception as e:
-            print(f"      ❌ Error saving results: {e}")
-            print(f"      ❌ Traceback: {traceback.format_exc()}")
+            batch_logger.error(f"Error saving results: {e}")
+            batch_logger.error(f"Traceback: {traceback.format_exc()}")
             return False

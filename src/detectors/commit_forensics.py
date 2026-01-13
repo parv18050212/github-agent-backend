@@ -106,6 +106,9 @@ def analyze_commits(repo_path: str) -> Dict[str, Any]:
         "active_days": set(), "file_types": Counter()
     })
     
+    # Store individual commits with details
+    all_commits = []
+    
     # Period Trackers: { '2023-10-01': {'Alice': 5, 'Bob': 1} }
     daily_activity = defaultdict(Counter)
     weekly_activity = defaultdict(Counter)
@@ -139,6 +142,7 @@ def analyze_commits(repo_path: str) -> Dict[str, Any]:
         
         # C. FILE & STATS ANALYSIS
         added, deleted = 0, 0
+        files_changed = []
         try:
             # Check what files changed
             for file_path, stats in c.stats.files.items():
@@ -146,11 +150,29 @@ def analyze_commits(repo_path: str) -> Dict[str, Any]:
                 author_stats[author]["file_types"][ext] += 1
                 added += stats.get('insertions', 0)
                 deleted += stats.get('deletions', 0)
+                files_changed.append({
+                    "path": file_path,
+                    "additions": stats.get('insertions', 0),
+                    "deletions": stats.get('deletions', 0)
+                })
         except:
             pass
 
         author_stats[author]["lines_added"] += added
         author_stats[author]["lines_deleted"] += deleted
+        
+        # Store individual commit details
+        all_commits.append({
+            "hash": c.hexsha,
+            "short_hash": c.hexsha[:7],
+            "author": author,
+            "email": c.author.email,
+            "message": msg,
+            "date": date.isoformat(),
+            "additions": added,
+            "deletions": deleted,
+            "files_changed": files_changed
+        })
 
         # D. FORENSIC CHECKS
         is_suspicious = False
@@ -220,6 +242,7 @@ def analyze_commits(repo_path: str) -> Dict[str, Any]:
         "branches": all_branches,
         "branch_activity": {k: dict(v) for k, v in branch_stats.items()}, # Branch-wise breakdown
         "author_stats": final_author_stats,
+        "all_commits": all_commits,  # Individual commit details
         "dummy_commits": dummy_commit_count,
         "suspicious_list": suspicious_commits,
         

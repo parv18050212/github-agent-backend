@@ -247,6 +247,13 @@ class AnalysisJobCRUD:
         
         result = supabase.table("analysis_jobs").update(data).eq("id", str(job_id)).execute()
         return result.data[0] if result.data else None
+    
+    @staticmethod
+    def delete_by_project(project_id: UUID) -> bool:
+        """Delete all analysis jobs for a project"""
+        supabase = get_supabase_client()
+        result = supabase.table("analysis_jobs").delete().eq("project_id", str(project_id)).execute()
+        return True
 
 
 class TechStackCRUD:
@@ -277,6 +284,13 @@ class TechStackCRUD:
         
         result = supabase.table("tech_stack").select("*").eq("project_id", str(project_id)).execute()
         return result.data
+    
+    @staticmethod
+    def delete_by_project(project_id: UUID) -> bool:
+        """Delete all technologies for a project"""
+        supabase = get_supabase_client()
+        result = supabase.table("tech_stack").delete().eq("project_id", str(project_id)).execute()
+        return True
 
 
 class IssueCRUD:
@@ -311,6 +325,13 @@ class IssueCRUD:
         
         result = supabase.table("issues").select("*").eq("project_id", str(project_id)).execute()
         return result.data
+    
+    @staticmethod
+    def delete_by_project(project_id: UUID) -> bool:
+        """Delete all issues for a project"""
+        supabase = get_supabase_client()
+        result = supabase.table("issues").delete().eq("project_id", str(project_id)).execute()
+        return True
 
 
 class TeamMemberCRUD:
@@ -342,3 +363,118 @@ class TeamMemberCRUD:
         
         result = supabase.table("team_members").select("*").eq("project_id", str(project_id)).execute()
         return result.data
+    
+    @staticmethod
+    def delete_by_project(project_id: UUID) -> bool:
+        """Delete all team members for a project"""
+        supabase = get_supabase_client()
+        result = supabase.table("team_members").delete().eq("project_id", str(project_id)).execute()
+        return True
+
+
+class BatchCRUD:
+    """CRUD operations for batches table (sequential batch processing)"""
+    
+    @staticmethod
+    def create_batch(total_repos: int) -> Dict[str, Any]:
+        """Create a new batch record"""
+        supabase = get_supabase_client()
+        
+        batch_id = str(uuid4())
+        data = {
+            "id": batch_id,
+            "status": "pending",
+            "total_repos": total_repos,
+            "completed_repos": 0,
+            "failed_repos": 0,
+            "current_index": 0,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        result = supabase.table("batches").insert(data).execute()
+        return result.data[0] if result.data else None
+    
+    @staticmethod
+    def get_batch(batch_id: str) -> Optional[Dict[str, Any]]:
+        """Get batch by ID"""
+        supabase = get_supabase_client()
+        
+        result = supabase.table("batches").select("*").eq("id", batch_id).execute()
+        return result.data[0] if result.data else None
+    
+    @staticmethod
+    def update_batch_progress(
+        batch_id: str, 
+        current_index: int, 
+        current_repo_url: str, 
+        current_repo_team: str
+    ) -> Dict[str, Any]:
+        """Update batch progress with current repo being analyzed"""
+        supabase = get_supabase_client()
+        
+        data = {
+            "status": "processing",
+            "current_index": current_index,
+            "current_repo_url": current_repo_url,
+            "current_repo_team": current_repo_team
+        }
+        
+        result = supabase.table("batches").update(data).eq("id", batch_id).execute()
+        return result.data[0] if result.data else None
+    
+    @staticmethod
+    def increment_completed(batch_id: str) -> Dict[str, Any]:
+        """Increment completed count for batch"""
+        supabase = get_supabase_client()
+        
+        # Get current count
+        batch = BatchCRUD.get_batch(batch_id)
+        if not batch:
+            return None
+        
+        new_count = (batch.get("completed_repos") or 0) + 1
+        result = supabase.table("batches").update({"completed_repos": new_count}).eq("id", batch_id).execute()
+        return result.data[0] if result.data else None
+    
+    @staticmethod
+    def increment_failed(batch_id: str) -> Dict[str, Any]:
+        """Increment failed count for batch"""
+        supabase = get_supabase_client()
+        
+        # Get current count
+        batch = BatchCRUD.get_batch(batch_id)
+        if not batch:
+            return None
+        
+        new_count = (batch.get("failed_repos") or 0) + 1
+        result = supabase.table("batches").update({"failed_repos": new_count}).eq("id", batch_id).execute()
+        return result.data[0] if result.data else None
+    
+    @staticmethod
+    def complete_batch(batch_id: str) -> Dict[str, Any]:
+        """Mark batch as completed"""
+        supabase = get_supabase_client()
+        
+        data = {
+            "status": "completed",
+            "current_repo_url": None,
+            "current_repo_team": None,
+            "completed_at": datetime.now().isoformat()
+        }
+        
+        result = supabase.table("batches").update(data).eq("id", batch_id).execute()
+        return result.data[0] if result.data else None
+    
+    @staticmethod
+    def fail_batch(batch_id: str, error_message: str) -> Dict[str, Any]:
+        """Mark batch as failed"""
+        supabase = get_supabase_client()
+        
+        data = {
+            "status": "failed",
+            "error_message": error_message,
+            "completed_at": datetime.now().isoformat()
+        }
+        
+        result = supabase.table("batches").update(data).eq("id", batch_id).execute()
+        return result.data[0] if result.data else None

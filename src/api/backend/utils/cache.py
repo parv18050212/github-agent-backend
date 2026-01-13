@@ -51,6 +51,24 @@ class RedisCache:
             self._client.ping()
             print("✅ Redis cache connected")
         except Exception as e:
+            # Retry with TLS if using standard redis://
+            if redis_url.startswith("redis://"):
+                print(f"⚠️  Standard Redis connection failed ({e}). Retrying with TLS...")
+                try:
+                    tls_url = redis_url.replace("redis://", "rediss://")
+                    self._client = redis.from_url(
+                        tls_url,
+                        decode_responses=True,
+                        socket_timeout=5,
+                        socket_connect_timeout=5,
+                        ssl_cert_reqs=None  # Allow self-signed/cloud certs
+                    )
+                    self._client.ping()
+                    print("✅ Redis cache connected (via TLS upgrade)")
+                    return
+                except Exception as tls_e:
+                     print(f"❌ Redis TLS upgrade also failed: {tls_e}")
+            
             print(f"⚠️  Redis connection failed: {e} - caching disabled")
             self._client = None
     
