@@ -15,8 +15,18 @@ def llm_heuristic_score(file_doc: Dict[str, Any]) -> float:
         return 0.0
     ent = token_entropy(tokens)
     x = ent
-    score = 1 / (1 + math.exp((x - 6.0)))
-    length_factor = min(1.0, len(tokens) / 2000)
+    
+    # Adjusted Heuristic:
+    # Code Entropy usually falls between 3.5 (simple) and 6.0 (complex/human).
+    # Minified code is > 8.0.
+    # AI code tends to be more regular (lower entropy) than messy human code.
+    # We shift pivot from 6.0 to 5.5 to allow more sensitivity.
+    
+    # If entropy is LOW (< 5.5), score goes HIGH (AI).
+    # If entropy is HIGH (> 5.5), score goes LOW (Human/Minified).
+    score = 1 / (1 + math.exp((x - 5.5) * 1.5)) 
+    
+    length_factor = min(1.0, len(tokens) / 100)
     return float(score * length_factor)
 
 def llm_origin_ensemble(file_doc: Dict[str, Any], providers: List[str] = None) -> Dict:

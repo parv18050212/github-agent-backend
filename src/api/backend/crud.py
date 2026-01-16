@@ -478,3 +478,137 @@ class BatchCRUD:
         
         result = supabase.table("batches").update(data).eq("id", batch_id).execute()
         return result.data[0] if result.data else None
+
+
+class UserCRUD:
+    """CRUD operations for public.users profile table"""
+
+    @staticmethod
+    def get_user(user_id: str) -> Optional[Dict[str, Any]]:
+        supabase = get_supabase_client()
+        result = supabase.table("users").select("*").eq("id", user_id).execute()
+        return result.data[0] if result.data else None
+
+    @staticmethod
+    def get_or_create_user(user_id: str, email: Optional[str] = None, full_name: Optional[str] = None) -> Dict[str, Any]:
+        supabase = get_supabase_client()
+
+        existing = UserCRUD.get_user(user_id)
+        if existing:
+            return existing
+
+        payload = {
+            "id": user_id,
+            "email": email,
+            "full_name": full_name,
+            "role": "student",
+            "is_active": True,
+            "created_at": datetime.now().isoformat()
+        }
+
+        result = supabase.table("users").insert(payload).execute()
+        return result.data[0] if result.data else payload
+
+    @staticmethod
+    def set_role(user_id: str, role: str) -> Dict[str, Any]:
+        supabase = get_supabase_client()
+        result = supabase.table("users").update({"role": role}).eq("id", user_id).execute()
+        return result.data[0] if result.data else None
+
+
+class MentorCRUD:
+    """CRUD operations for mentors"""
+
+    @staticmethod
+    def create_mentor(user_id: str, expertise_areas: Optional[list] = None, max_teams: int = 5, bio: Optional[str] = None) -> Dict[str, Any]:
+        supabase = get_supabase_client()
+        data = {
+            "user_id": user_id,
+            "expertise_areas": expertise_areas or [],
+            "max_teams": max_teams,
+            "bio": bio,
+            "created_at": datetime.now().isoformat()
+        }
+        result = supabase.table("mentors").insert(data).execute()
+        return result.data[0] if result.data else None
+
+    @staticmethod
+    def get_by_user(user_id: str) -> Optional[Dict[str, Any]]:
+        supabase = get_supabase_client()
+        result = supabase.table("mentors").select("*").eq("user_id", user_id).execute()
+        return result.data[0] if result.data else None
+
+
+class TeamCRUD:
+    """CRUD operations for teams and memberships"""
+
+    @staticmethod
+    def create_team(name: str, mentor_id: Optional[str] = None, description: Optional[str] = None, is_active: bool = True) -> Dict[str, Any]:
+        supabase = get_supabase_client()
+        data = {
+            "name": name,
+            "mentor_id": mentor_id,
+            "description": description,
+            "is_active": is_active,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        result = supabase.table("teams").insert(data).execute()
+        return result.data[0] if result.data else None
+
+    @staticmethod
+    def list_teams() -> List[Dict[str, Any]]:
+        supabase = get_supabase_client()
+        result = supabase.table("teams").select("*").order("created_at", desc=True).execute()
+        return result.data or []
+
+    @staticmethod
+    def add_member(team_id: str, user_id: str, role: str = "member") -> Dict[str, Any]:
+        supabase = get_supabase_client()
+        data = {
+            "team_id": team_id,
+            "user_id": user_id,
+            "role": role,
+            "joined_at": datetime.now().isoformat()
+        }
+        result = supabase.table("team_memberships").upsert(data, on_conflict="team_id,user_id").execute()
+        return result.data[0] if result.data else data
+
+    @staticmethod
+    def list_members(team_id: str) -> List[Dict[str, Any]]:
+        supabase = get_supabase_client()
+        result = supabase.table("team_memberships").select("*").eq("team_id", team_id).execute()
+        return result.data or []
+
+
+class ProjectCommentCRUD:
+    """CRUD operations for project_comments"""
+
+    @staticmethod
+    def add_comment(project_id: str, user_id: str, comment: str, is_private: bool = False) -> Dict[str, Any]:
+        supabase = get_supabase_client()
+        data = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "comment": comment,
+            "is_private": is_private,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        result = supabase.table("project_comments").insert(data).execute()
+        return result.data[0] if result.data else data
+
+    @staticmethod
+    def list_comments(project_id: str) -> List[Dict[str, Any]]:
+        supabase = get_supabase_client()
+        result = supabase.table("project_comments").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
+        return result.data or []
+
+    @staticmethod
+    def delete_comment(comment_id: str, requesting_user: str, is_admin: bool) -> bool:
+        supabase = get_supabase_client()
+        query = supabase.table("project_comments").delete().eq("id", comment_id)
+        if not is_admin:
+            query = query.eq("user_id", requesting_user)
+        result = query.execute()
+        return bool(result.data)

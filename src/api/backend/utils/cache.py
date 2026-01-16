@@ -44,8 +44,8 @@ class RedisCache:
             self._client = redis.from_url(
                 redis_url,
                 decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5
+                socket_timeout=1,
+                socket_connect_timeout=1
             )
             # Test connection
             self._client.ping()
@@ -59,8 +59,8 @@ class RedisCache:
                     self._client = redis.from_url(
                         tls_url,
                         decode_responses=True,
-                        socket_timeout=5,
-                        socket_connect_timeout=5,
+                        socket_timeout=1,
+                        socket_connect_timeout=1,
                         ssl_cert_reqs=None  # Allow self-signed/cloud certs
                     )
                     self._client.ping()

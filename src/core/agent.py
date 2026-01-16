@@ -113,7 +113,11 @@ def node_forensic_analysis(ctx):
     repo_path = ctx.get("repo_path")
     providers = ctx.get("llm_providers", [])
     
-    files = list_files(repo_path, ext_whitelist=[".py", ".js", ".java", ".cpp", ".ts", ".go"])
+    files = list_files(repo_path, ext_whitelist=[
+        ".py", ".js", ".java", ".cpp", ".ts", ".go",
+        ".jsx", ".tsx", ".c", ".h", ".cs", ".rs", ".php", 
+        ".rb", ".swift", ".kt", ".scala", ".dart"
+    ])
     
     file_contents = {}
     for f in files:

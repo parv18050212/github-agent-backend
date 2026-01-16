@@ -12,7 +12,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import routers
-from src.api.backend.routers import analysis, projects, leaderboard, frontend_api
+from src.api.backend.routers import (
+    analysis, 
+    projects, 
+    leaderboard, 
+    frontend_api, 
+    auth,
+    auth_new,
+    batches
+)
 
 # Create FastAPI app
 app = FastAPI(
@@ -38,6 +46,11 @@ app.include_router(analysis.router)
 # app.include_router(projects.router)  # Disabled - using frontend_api instead
 # app.include_router(leaderboard.router)  # Disabled - using frontend_api instead
 app.include_router(frontend_api.router)  # Frontend-compatible endpoints
+app.include_router(auth.router)  # Auth/roles/teams/comments (legacy)
+
+# New batch management system routers
+app.include_router(auth_new.router)  # New authentication with Google OAuth
+app.include_router(batches.router)  # Batch management (CRUD)
 
 
 @app.get("/")

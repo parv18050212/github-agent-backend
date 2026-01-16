@@ -116,3 +116,175 @@ class ProjectWithDetails(Project):
     issues: List[Issue] = []
     team_members: List[TeamMember] = []
     job: Optional[AnalysisJob] = None
+
+
+# ==================== NEW MODELS FOR BATCH SYSTEM ====================
+
+class BatchBase(BaseModel):
+    """Base batch model"""
+    name: str = Field(..., description="Batch name (e.g., '4th Sem 2024')")
+    semester: str = Field(..., description="Semester (e.g., '4th Sem', '6th Sem')")
+    year: int = Field(..., description="Year (e.g., 2024)")
+    start_date: datetime
+    end_date: datetime
+    status: str = Field("active", description="active, archived, upcoming")
+
+
+class BatchCreate(BatchBase):
+    """Model for creating a new batch"""
+    pass
+
+
+class BatchUpdate(BaseModel):
+    """Model for updating a batch"""
+    name: Optional[str] = None
+    semester: Optional[str] = None
+    year: Optional[int] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    status: Optional[str] = None
+
+
+class Batch(BatchBase):
+    """Full batch model"""
+    id: UUID
+    team_count: int = 0
+    student_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class TeamBase(BaseModel):
+    """Base team model"""
+    batch_id: UUID
+    team_name: str
+    project_id: Optional[UUID] = None
+    mentor_id: Optional[UUID] = None
+
+
+class TeamCreate(TeamBase):
+    """Model for creating a new team"""
+    pass
+
+
+class TeamUpdate(BaseModel):
+    """Model for updating a team"""
+    team_name: Optional[str] = None
+    project_id: Optional[UUID] = None
+    mentor_id: Optional[UUID] = None
+    health_status: Optional[str] = None
+    risk_flags: Optional[List[str]] = None
+
+
+class Team(TeamBase):
+    """Full team model"""
+    id: UUID
+    student_count: int = 0
+    health_status: str = "on_track"  # on_track, at_risk, critical
+    risk_flags: Optional[List[str]] = []
+    last_activity: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class StudentBase(BaseModel):
+    """Base student model"""
+    team_id: UUID
+    name: str
+    email: Optional[str] = None
+    github_username: Optional[str] = None
+
+
+class StudentCreate(StudentBase):
+    """Model for creating a new student"""
+    pass
+
+
+class StudentUpdate(BaseModel):
+    """Model for updating a student"""
+    name: Optional[str] = None
+    email: Optional[str] = None
+    github_username: Optional[str] = None
+    contribution_score: Optional[float] = None
+    commit_count: Optional[int] = None
+    lines_added: Optional[int] = None
+    lines_deleted: Optional[int] = None
+    last_commit_date: Optional[datetime] = None
+
+
+class Student(StudentBase):
+    """Full student model"""
+    id: UUID
+    contribution_score: float = 0
+    commit_count: int = 0
+    lines_added: int = 0
+    lines_deleted: int = 0
+    last_commit_date: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class MentorTeamAssignmentBase(BaseModel):
+    """Base mentor assignment model"""
+    mentor_id: UUID
+    team_id: UUID
+    batch_id: UUID
+
+
+class MentorTeamAssignmentCreate(MentorTeamAssignmentBase):
+    """Model for creating a mentor assignment"""
+    assigned_by: Optional[UUID] = None
+
+
+class MentorTeamAssignment(MentorTeamAssignmentBase):
+    """Full mentor assignment model"""
+    id: UUID
+    assigned_at: datetime
+    assigned_by: Optional[UUID] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class UserProfile(BaseModel):
+    """User profile model from Supabase Auth"""
+    id: UUID
+    email: str
+    role: str  # admin, mentor
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+# ==================== EXTENDED MODELS WITH RELATIONS ====================
+
+class TeamWithDetails(Team):
+    """Team with students and project"""
+    students: List[Student] = []
+    project: Optional[Project] = None
+    mentor: Optional[UserProfile] = None
+
+
+class BatchWithTeams(Batch):
+    """Batch with teams"""
+    teams: List[Team] = []
+
+
+class BatchWithStats(Batch):
+    """Batch with statistics"""
+    avg_score: Optional[float] = None
+    completed_projects: int = 0
+    pending_projects: int = 0
+    at_risk_teams: int = 0

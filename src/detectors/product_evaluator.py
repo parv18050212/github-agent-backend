@@ -18,7 +18,7 @@ def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
     print("      🧠 Generating Codebase Summary for Gemini 2.5...")
     context = generate_repo_summary(repo_path)
     
-    # 2. Configure Client (New google-genai SDK)
+    # 2. Configure Gemini API
     try:
         client = genai.Client(api_key=api_key)
         
@@ -43,13 +43,13 @@ def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
         {context}
         """
 
-        # 3. Call API (Updated Method for google-genai SDK)
-        print("      🚀 Sending to Gemini 2.5 Flash...")
+        # 3. Call API
+        print("      🚀 Sending to Gemini 2.0 Flash...")
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model='gemini-2.0-flash-exp',
             contents=prompt,
             config=types.GenerateContentConfig(
-                response_mime_type="application/json"  # Native JSON mode
+                response_mime_type="application/json"
             )
         )
         

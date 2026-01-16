@@ -95,12 +95,47 @@ def cleanup_repo(path: str):
 
 def list_files(repo_path: str, ext_whitelist=None):
     ext_whitelist = ext_whitelist or [".py", ".js", ".java", ".c", ".cpp"]
-    files = []
-    for root, _, filenames in os.walk(repo_path):
+    
+    # Exclude common vendor/build/config directories and files
+    exclude_dirs = {
+        "node_modules", "venv", ".venv", "env", "dist", "build", "target", 
+        "bin", "obj", "vendor", "libs", "lib", "migrations", ".git", ".github",
+        "__pycache__", "coverage", "test", "tests", "docs"
+    }
+    
+    exclude_files = {
+        "package-lock.json", "yarn.lock", "bun.lockb", "cargo.lock", 
+        "poetry.lock", "go.sum", "pnpm-lock.yaml"
+    }
+
+    files_list = []
+    
+    for root, dirs, filenames in os.walk(repo_path):
+        # Filter directories in-place to prevent walking them
+        dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+        
         for f in filenames:
-            if any(f.endswith(e) for e in ext_whitelist):
-                files.append(os.path.join(root, f))
-    return files
+            # 1. Check extension
+            if not any(f.endswith(e) for e in ext_whitelist):
+                continue
+            
+            # 2. Check exact exclude list
+            if f in exclude_files:
+                continue
+
+            # 3. Check for minified files (usually libraries)
+            if ".min." in f:
+                continue
+                
+            # 4. Check for test files (optional, but often AI analysis focuses on logic)
+            if f.endswith(".test.js") or f.endswith(".spec.js") or f.startswith("test_"):
+                # Decide if you want to keep tests. Often they are AI generated too.
+                # For now, let's include them as AI writes tests often.
+                pass
+
+            files_list.append(os.path.join(root, f))
+            
+    return files_list
 
 def get_commit_history(repo_path: str, max_commits: int = 500) -> List[Dict]:
     r = Repo(repo_path)
