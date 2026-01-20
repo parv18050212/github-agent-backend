@@ -263,8 +263,26 @@ class TechStackCRUD:
     
     @staticmethod
     def add_technologies(project_id: UUID, technologies: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """Add multiple technologies for a project"""
+        """Add multiple technologies for a project (replaces existing tech stack)"""
         supabase = get_supabase_client()
+        
+        # Delete existing tech stack first to prevent duplicates on re-analysis
+        supabase.table("tech_stack").delete().eq("project_id", str(project_id)).execute()
+        
+        if not technologies:
+            return []
+        
+        # Deduplicate by technology name
+        seen = set()
+        unique_techs = []
+        for tech in technologies:
+            tech_name = tech.get("technology", "").strip().lower()
+            if tech_name and tech_name not in seen:
+                seen.add(tech_name)
+                unique_techs.append(tech)
+        
+        if not unique_techs:
+            return []
         
         data = [
             {
@@ -273,7 +291,7 @@ class TechStackCRUD:
                 "technology": tech.get("technology"),
                 "category": tech.get("category")
             }
-            for tech in technologies
+            for tech in unique_techs
         ]
         
         result = supabase.table("tech_stack").insert(data).execute()
@@ -300,8 +318,14 @@ class IssueCRUD:
     
     @staticmethod
     def add_issues(project_id: UUID, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Add multiple issues for a project"""
+        """Add multiple issues for a project (replaces existing issues)"""
         supabase = get_supabase_client()
+        
+        # Delete existing issues first to prevent duplicates on re-analysis
+        supabase.table("issues").delete().eq("project_id", str(project_id)).execute()
+        
+        if not issues:
+            return []
         
         data = [
             {

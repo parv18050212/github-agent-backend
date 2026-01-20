@@ -362,12 +362,16 @@ async def update_batch(
 )
 async def trigger_batch_analysis(
     batch_id: UUID,
+    force: bool = Query(False, description="Force re-analysis of all teams, ignoring the 7-day interval"),
     current_user: AuthUser = Depends(get_current_user)
 ):
     """
     Trigger weekly analysis for all teams in a batch (Admin only)
     
-    Creates a new batch_analysis_run and queues analysis jobs for all teams using Celery.
+    Creates a new batch_analysis_run and queues analysis jobs for teams using Celery.
+    
+    By default, only teams that haven't been analyzed within the last 7 days will be
+    included. Use force=true to re-analyze all teams regardless of when they were last analyzed.
     
     **Permissions:** Admin only
     """
@@ -449,15 +453,28 @@ async def trigger_batch_analysis(
         repos = []
         jobs_created = 0
         jobs_skipped = 0
+        skipped_reasons = []
+        
+        # Import re-analysis check
+        from src.api.backend.routers.analysis import should_allow_reanalysis
         
         for team in teams:
             project = team.get("projects")
             if not project:
                 jobs_skipped += 1
+                skipped_reasons.append(f"{team['team_name']}: No project")
                 continue
             
-            project_id = project[0]["id"] if isinstance(project, list) else project["id"]
-            repo_url = project[0]["repo_url"] if isinstance(project, list) else project["repo_url"]
+            project_data = project[0] if isinstance(project, list) else project
+            project_id = project_data["id"]
+            repo_url = project_data.get("repo_url")
+            
+            # Check if re-analysis should be allowed (auto-scheduled analysis respects interval)
+            allowed, reason = should_allow_reanalysis(project_data, force=force)
+            if not allowed:
+                jobs_skipped += 1
+                skipped_reasons.append(f"{team['team_name']}: {reason}")
+                continue
             
             # Create analysis job
             job_insert = {
@@ -490,6 +507,7 @@ async def trigger_batch_analysis(
             except Exception as e:
                 print(f"Failed to create job for team {team['team_name']}: {e}")
                 jobs_skipped += 1
+                skipped_reasons.append(f"{team['team_name']}: {str(e)}")
         
         # Queue Celery batch task (or fallback to sequential processing)
         celery_queued = False
@@ -527,11 +545,12 @@ async def trigger_batch_analysis(
         return {
             "run_id": run_id,
             "run_number": run_number,
-            "status": "running",
+            "status": "running" if jobs_created > 0 else "skipped",
             "total_teams": total_teams,
             "jobs_created": jobs_created,
             "jobs_skipped": jobs_skipped,
-            "message": f"Batch analysis run {run_number} started with {jobs_created} teams queued"
+            "skipped_reasons": skipped_reasons[:10] if skipped_reasons else [],  # Limit to first 10
+            "message": f"Batch analysis run {run_number}: {jobs_created} teams queued, {jobs_skipped} skipped (already analyzed within interval)"
         }
         
     except HTTPException:

@@ -816,25 +816,23 @@ async def get_team_progress(
     }
 
 
-@router.post("/{team_id}/analyze", response_model=AnalysisJobResponse)
+@router.post("/{team_id}/analyze", response_model=AnalysisJobResponse, dependencies=[Depends(RoleChecker(["admin"]))])
 async def analyze_team(
     team_id: UUID,
-    force: bool = Query(False, description="Force re-analysis even if recently analyzed"),
+    force: bool = Query(False, description="Force re-analysis (admin only)"),
     current_user: AuthUser = Depends(get_current_user)
 ):
     """
-    Trigger analysis for a team's repository.
+    Trigger manual analysis for a team's repository (Admin only).
     
     Creates an analysis job and queues it for processing.
     
-    Re-analysis is only allowed:
-    - If the project has never been analyzed
-    - If the previous analysis failed
-    - If sufficient time has passed since last analysis (configurable via REANALYSIS_INTERVAL_DAYS env var)
-    - If force=true is specified
-    """
-    from src.api.backend.routers.analysis import should_allow_reanalysis, REANALYSIS_INTERVAL_DAYS
+    Note: Only admins can manually trigger analysis. Mentors can view analysis
+    results but cannot trigger new analyses. Automatic re-analysis is scheduled
+    to run every 7 days via the batch analysis system.
     
+    Use force=true to re-analyze immediately regardless of the last analysis time.
+    """
     supabase = get_supabase()
     
     # Get team with project
@@ -847,14 +845,6 @@ async def analyze_team(
     
     team = team_response.data[0]
     
-    # Check authorization
-    if current_user.role == "mentor":
-        if team.get("mentor_id") != str(current_user.user_id):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: You are not assigned to this team"
-            )
-    
     # Check if project exists
     project = team.get("projects")
     if not project:
@@ -864,14 +854,14 @@ async def analyze_team(
     project_data = project[0] if isinstance(project, list) else project
     project_id = project_data["id"]
     
-    # Check if re-analysis should be allowed using the shared logic
-    allowed, reason = should_allow_reanalysis(project_data, force=force)
-    if not allowed:
+    # For manual admin triggers, check if currently analyzing
+    current_status = project_data.get("status")
+    if current_status in ["analyzing", "queued"]:
         return AnalysisJobResponse(
             job_id=None,
             project_id=project_id,
             status="skipped",
-            message=reason
+            message=f"Analysis already in progress (status: {current_status})"
         )
     
     # Create analysis job
