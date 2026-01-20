@@ -154,7 +154,8 @@ async def get_mentor(
     
     Returns complete mentor profile with all team assignments.
     """
-    supabase = get_supabase()
+    # Use admin client to bypass RLS policies on users table
+    supabase = get_supabase_admin_client()
     
     # Get mentor user
     mentor_response = supabase.table("users").select(

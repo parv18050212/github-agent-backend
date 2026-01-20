@@ -341,8 +341,24 @@ class TeamMemberCRUD:
     
     @staticmethod
     def add_members(project_id: UUID, members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Add multiple team members for a project"""
+        """Add multiple team members for a project (replaces existing members)"""
         supabase = get_supabase_client()
+        
+        # Delete existing members first to prevent duplicates
+        supabase.table("team_members").delete().eq("project_id", str(project_id)).execute()
+        
+        # Deduplicate members by name (prefer entry with more commits)
+        members_by_name = {}
+        for member in members:
+            name = member.get("name", "").strip()
+            if not name:
+                continue
+            existing = members_by_name.get(name)
+            if not existing or (member.get("commits", 0) or 0) > (existing.get("commits", 0) or 0):
+                members_by_name[name] = member
+        
+        if not members_by_name:
+            return []
         
         data = [
             {
@@ -352,7 +368,7 @@ class TeamMemberCRUD:
                 "commits": member.get("commits"),
                 "contribution_pct": member.get("contribution_pct")
             }
-            for member in members
+            for member in members_by_name.values()
         ]
         
         result = supabase.table("team_members").insert(data).execute()

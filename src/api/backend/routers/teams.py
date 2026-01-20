@@ -69,13 +69,18 @@ async def list_teams(
         # Mentors only see their assigned teams
         query = query.eq("mentor_id", str(current_user.user_id))
     else:
-        # Admins must specify batch_id
-        if not batch_id:
+        # Admins: require either batch_id or mentor_id (for viewing mentor's teams)
+        if mentor_id:
+            # Admin viewing a specific mentor's teams - no batch_id required
+            query = query.eq("mentor_id", str(mentor_id))
+        elif batch_id:
+            # Admin viewing teams in a batch
+            query = query.eq("batch_id", str(batch_id))
+        else:
             raise HTTPException(
                 status_code=400,
-                detail="batch_id is required for admin users"
+                detail="batch_id or mentor_id is required for admin users"
             )
-        query = query.eq("batch_id", str(batch_id))
     
     # Apply filters
     # Special handling for "unassigned" status - filter by mentor_id IS NULL
@@ -84,7 +89,8 @@ async def list_teams(
     elif status:
         query = query.eq("status", status)
     
-    if mentor_id:
+    # Apply mentor_id filter if batch_id was used (to filter within a batch)
+    if batch_id and mentor_id:
         query = query.eq("mentor_id", str(mentor_id))
     
     if search:
