@@ -43,6 +43,13 @@ async def list_teams(
     - **Admin**: Can see all teams, requires batch_id parameter
     - **Mentor**: Only sees assigned teams
     """
+    # Debug logging
+    print(f"[Teams API] list_teams called")
+    print(f"[Teams API] current_user.user_id: {current_user.user_id}")
+    print(f"[Teams API] current_user.email: {current_user.email}")
+    print(f"[Teams API] current_user.role: {current_user.role}")
+    print(f"[Teams API] batch_id param: {batch_id}")
+    
     supabase = get_supabase()
     
     # Build query
@@ -51,7 +58,7 @@ async def list_teams(
         *,
         batches!inner(id, name, semester, year),
         students(count),
-        projects(id, total_score, last_analyzed_at, status),
+        projects(id, total_score, status, last_analyzed_at),
         team_members:projects(team_members(count))
         """,
         count="exact"
@@ -71,7 +78,10 @@ async def list_teams(
         query = query.eq("batch_id", str(batch_id))
     
     # Apply filters
-    if status:
+    # Special handling for "unassigned" status - filter by mentor_id IS NULL
+    if status == "unassigned":
+        query = query.is_("mentor_id", "null")
+    elif status:
         query = query.eq("status", status)
     
     if mentor_id:
@@ -83,11 +93,16 @@ async def list_teams(
             f"projects.repo_url.ilike.%{search}%"
         )
     
-    # Apply sorting
-    if sort.startswith("-"):
-        query = query.order(sort[1:], desc=True)
+    # Apply sorting (map frontend field names to database columns)
+    sort_field = sort
+    if sort == "name" or sort == "-name":
+        # Frontend uses "name" but database has "team_name"
+        sort_field = sort.replace("name", "team_name")
+    
+    if sort_field.startswith("-"):
+        query = query.order(sort_field[1:], desc=True)
     else:
-        query = query.order(sort)
+        query = query.order(sort_field)
     
     # Apply pagination
     offset = (page - 1) * page_size
@@ -98,6 +113,11 @@ async def list_teams(
     
     teams = response.data
     total = response.count
+
+    # Debug logging for query results
+    print(f"[Teams API] Query returned {len(teams)} teams, total count: {total}")
+    if current_user.role == "mentor":
+        print(f"[Teams API] Mentor filter applied with mentor_id: {current_user.user_id}")
 
     mentor_ids = {str(team.get("mentor_id")) for team in teams if team.get("mentor_id")}
     mentor_lookup = {}
@@ -595,7 +615,7 @@ async def get_team(
         students(*),
         projects(*)
         """
-    ).eq("id", str(team_id)).execute()
+    ).eq("id", team_id).execute()
     
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -716,7 +736,7 @@ async def delete_team(
 
 @router.get("/{team_id}/progress")
 async def get_team_progress(
-    team_id: UUID,
+    team_id: int,
     current_user: AuthUser = Depends(get_current_user)
 ):
     """

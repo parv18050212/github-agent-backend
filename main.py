@@ -60,12 +60,12 @@ app.include_router(analysis.router)
 # app.include_router(projects.router)  # Disabled - using frontend_api instead
 # app.include_router(leaderboard.router)  # Disabled - using frontend_api instead
 app.include_router(frontend_api.router)  # Frontend-compatible endpoints
-app.include_router(auth.router)  # Auth/roles/teams/comments (legacy)
+app.include_router(auth.router)  # Auth/me and project comments only
 
 # New batch management system routers
 app.include_router(auth_new.router)  # New authentication with Google OAuth
 app.include_router(batches.router)  # Batch management (CRUD)
-app.include_router(teams.router)  # Team management (Phase 2)
+app.include_router(teams.router)  # Team management - all /api/teams endpoints (Phase 2)
 app.include_router(mentors.router)  # Mentor management (Phase 3)
 app.include_router(assignments.router)  # Mentor-Team assignments (Phase 3)
 app.include_router(dashboards.router)  # Admin & Mentor dashboards (Phase 4)

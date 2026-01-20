@@ -72,7 +72,8 @@ class ProjectCRUD:
         """Update project scores"""
         data = {
             **scores,
-            "analyzed_at": datetime.now().isoformat()
+            "analyzed_at": datetime.now().isoformat(),
+            "last_analyzed_at": datetime.now().isoformat()
         }
         return ProjectCRUD.update_project(project_id, data)
     

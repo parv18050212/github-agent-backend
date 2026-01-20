@@ -527,8 +527,8 @@ class TeamWithDetailsResponse(BaseModel):
     updated_at: datetime
 
 
-class TeamListResponse(BaseModel):
-    """List of teams"""
+class SimpleTeamListResponse(BaseModel):
+    """Simple list of teams (non-paginated) - used for dropdowns etc."""
     teams: List[TeamResponse]
     total: int
 

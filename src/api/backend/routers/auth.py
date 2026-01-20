@@ -1,5 +1,6 @@
 """
-Role-aware endpoints for user context, teams, and project comments.
+Auth and Project Comments endpoints.
+Note: Team management endpoints have been moved to teams.py router (Phase 2)
 """
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -7,15 +8,13 @@ from typing import List
 
 from src.api.backend.schemas import (
     AuthUserResponse,
-    CreateTeamRequest,
-    TeamMemberRequest,
     ProjectCommentRequest,
     ProjectCommentResponse,
 )
-from src.api.backend.crud import UserCRUD, TeamCRUD, ProjectCommentCRUD
-from src.api.backend.utils.auth import get_current_user, require_role, AuthContext
+from src.api.backend.crud import UserCRUD, ProjectCommentCRUD
+from src.api.backend.utils.auth import get_current_user, AuthContext
 
-router = APIRouter(prefix="/api", tags=["auth", "teams", "comments"])
+router = APIRouter(prefix="/api", tags=["auth", "comments"])
 
 
 @router.get("/auth/me", response_model=AuthUserResponse)
@@ -28,31 +27,6 @@ async def get_me(ctx: AuthContext = Depends(get_current_user)):
         role=profile.get("role", "student"),
         full_name=profile.get("full_name"),
     )
-
-
-@router.post("/teams", status_code=status.HTTP_201_CREATED)
-async def create_team(payload: CreateTeamRequest, ctx: AuthContext = Depends(require_role("admin", "mentor"))):
-    """Create a team (admin/mentor only)."""
-    created = TeamCRUD.create_team(
-        name=payload.name,
-        mentor_id=str(payload.mentor_id) if payload.mentor_id else None,
-        description=payload.description,
-        is_active=payload.is_active,
-    )
-    return created
-
-
-@router.get("/teams", response_model=List[dict])
-async def list_teams(ctx: AuthContext = Depends(require_role("admin", "mentor"))):
-    """List all teams (admin/mentor)."""
-    return TeamCRUD.list_teams()
-
-
-@router.post("/teams/{team_id}/members", status_code=status.HTTP_201_CREATED)
-async def add_team_member(team_id: UUID, payload: TeamMemberRequest, ctx: AuthContext = Depends(require_role("admin", "mentor"))):
-    """Add a member to a team (admin/mentor)."""
-    member = TeamCRUD.add_member(team_id=str(team_id), user_id=str(payload.user_id), role=payload.role)
-    return member
 
 
 @router.get("/projects/{project_id}/comments", response_model=List[ProjectCommentResponse])
@@ -82,3 +56,4 @@ async def delete_project_comment(comment_id: UUID, ctx: AuthContext = Depends(ge
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found or not permitted")
     return None
+
