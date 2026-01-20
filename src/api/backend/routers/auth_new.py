@@ -148,28 +148,42 @@ async def get_current_user_profile(current_user: AuthUser = Depends(get_current_
     
     **Requires:** Valid JWT token
     
-    **Returns:** User profile with FRESH role from Supabase Admin API
+    **Returns:** User profile with FRESH role from Supabase Admin API (cached for 5 minutes)
     """
-    # CRITICAL: Fetch fresh role directly here, not from middleware
-    # This ensures role changes take effect immediately
     from ..database import get_supabase_admin_client
+    from ..utils.cache import cache, RedisCache
     
-    role = current_user.role  # Fallback
     user_id = str(current_user.user_id)
     
-    try:
-        admin_client = get_supabase_admin_client()
-        admin_user = admin_client.auth.admin.get_user_by_id(user_id)
+    # Check cache first
+    cache_key = f"auth:role:{user_id}"
+    cached_role = cache.get(cache_key)
+    
+    if cached_role:
+        # Use cached role
+        role = cached_role
+    else:
+        # Cache miss - fetch fresh role from Admin API
+        role = current_user.role  # Fallback
         
-        if admin_user and admin_user.user:
-            fresh_metadata = admin_user.user.app_metadata or {}
-            role = fresh_metadata.get("role") or current_user.role or "mentor"
-            print(f"[/api/auth/me] Fresh role for {current_user.email}: {role} (metadata: {fresh_metadata})")
-        else:
-            print(f"[/api/auth/me] No admin user data for {user_id}")
-    except Exception as e:
-        print(f"[/api/auth/me] Admin API error: {e}")
-        # Keep the role from current_user as fallback
+        try:
+            admin_client = get_supabase_admin_client()
+            admin_user = admin_client.auth.admin.get_user_by_id(user_id)
+            
+            if admin_user and admin_user.user:
+                fresh_metadata = admin_user.user.app_metadata or {}
+                role = fresh_metadata.get("role") or current_user.role or "mentor"
+                print(f"[Auth] Fresh role from Admin API: {role} (app_metadata: {fresh_metadata})")
+            else:
+                print(f"[Auth] No admin user data for {user_id}")
+        except Exception as e:
+            print(f"[Auth] Admin API error: {e}")
+            # Keep the role from current_user as fallback
+        
+        # Cache the role for 5 minutes
+        cache.set(cache_key, role, RedisCache.TTL_MEDIUM)
+    
+    print(f"[Auth] Final role for {current_user.email}: {role}")
     
     return UserProfileResponse(
         id=current_user.user_id,
