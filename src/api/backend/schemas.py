@@ -742,3 +742,617 @@ class ReportResponse(BaseModel):
     download_url: str
     generated_at: datetime
     expires_at: Optional[datetime] = None
+
+
+# ==================== Team Management Schemas ====================
+
+class StudentCreateRequest(BaseModel):
+    """Student data for team creation"""
+    name: str = Field(..., min_length=1, max_length=255)
+    email: str = Field(..., pattern=r'^[\w\.-]+@[\w\.-]+\.\w+$')
+    github_username: Optional[str] = Field(None, max_length=255)
+
+
+class TeamCreateRequest(BaseModel):
+    """Create team request"""
+    batch_id: UUID
+    name: str = Field(..., min_length=1, max_length=255)
+    repo_url: Optional[str] = None
+    description: Optional[str] = None
+    students: Optional[List[StudentCreateRequest]] = None
+    
+    @validator('repo_url')
+    def validate_repo_url(cls, v):
+        if v and 'github.com' not in v.lower():
+            raise ValueError('Only GitHub repositories are supported')
+        return v
+
+
+class TeamUpdateRequest(BaseModel):
+    """Update team request"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    status: Optional[str] = Field(None, pattern="^(active|inactive|archived)$")
+    health_status: Optional[str] = Field(None, pattern="^(on_track|at_risk|critical)$")
+    risk_flags: Optional[List[str]] = None
+
+
+class TeamResponse(BaseModel):
+    """Team operation response"""
+    team: Dict[str, Any]
+    message: str
+
+
+class TeamDetailResponse(BaseModel):
+    """Detailed team information"""
+    id: UUID
+    batch_id: UUID
+    batch_name: str
+    name: str
+    repo_url: Optional[str] = None
+    description: Optional[str] = None
+    status: str
+    assigned_mentor_id: Optional[UUID] = None
+    assigned_mentor_name: Optional[str] = None
+    students: List[Dict[str, Any]]
+    project_analysis: Optional[Dict[str, Any]] = None
+    health_status: str
+    risk_flags: List[str]
+    contribution_balance: Optional[float] = None
+    last_activity: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class TeamListResponse(BaseModel):
+    """Paginated team list response"""
+    teams: List[Dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class BulkUploadResponse(BaseModel):
+    """Bulk team upload response"""
+    successful: int
+    failed: int
+    total: int
+    errors: List[Dict[str, Any]]
+    teams: List[Dict[str, Any]]
+    message: str
+
+
+class AnalysisJobResponse(BaseModel):
+    """Analysis job response"""
+    job_id: Optional[UUID] = None
+    project_id: UUID
+    status: str
+    message: str
+
+
+class MessageResponse(BaseModel):
+    """Generic message response"""
+    success: bool
+    message: str
+
+
+# ==================== Mentor Management Schemas ====================
+
+class MentorCreateRequest(BaseModel):
+    """Create mentor request"""
+    email: str = Field(..., pattern=r'^[\w\.-]+@[\w\.-]+\.\w+$')
+    full_name: str = Field(..., min_length=1, max_length=255)
+    status: Optional[str] = Field("active", pattern="^(active|inactive)$")
+
+
+class MentorUpdateRequest(BaseModel):
+    """Update mentor request"""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    status: Optional[str] = Field(None, pattern="^(active|inactive)$")
+
+
+class MentorResponse(BaseModel):
+    """Mentor operation response"""
+    mentor: Dict[str, Any]
+    message: str
+
+
+class MentorListResponse(BaseModel):
+    """Mentor list response"""
+    mentors: List[Dict[str, Any]]
+    total: int
+
+
+class MentorDetailResponse(BaseModel):
+    """Detailed mentor information"""
+    id: UUID
+    email: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    status: str
+    assigned_teams: List[Dict[str, Any]]
+    team_count: int
+    batches: List[str]
+    created_at: datetime
+
+
+# ==================== Assignment Management Schemas ====================
+
+class AssignmentCreateRequest(BaseModel):
+    """Assign teams to mentor request"""
+    mentor_id: UUID
+    team_ids: List[UUID] = Field(..., min_items=1)
+
+
+class AssignmentDeleteRequest(BaseModel):
+    """Unassign teams from mentor request"""
+    mentor_id: UUID
+    team_ids: List[UUID] = Field(..., min_items=1)
+
+
+class AssignmentResponse(BaseModel):
+    """Assignment operation response"""
+    success: bool
+    message: str
+    assignments: List[Dict[str, Any]]
+
+
+class TeamAssignRequest(BaseModel):
+    """Assign a single team to a mentor"""
+    mentor_id: UUID
+
+
+# ==================== Dashboard Schemas ====================
+
+class DashboardOverview(BaseModel):
+    """Dashboard overview statistics"""
+    totalTeams: int
+    activeTeams: int
+    inactiveTeams: int
+    totalMentors: int
+    totalStudents: int
+    unassignedTeams: int
+    analysisQueue: int
+
+
+class HealthDistribution(BaseModel):
+    """Team health distribution"""
+    onTrack: int
+    atRisk: int
+    critical: int
+
+
+class RecentActivityItem(BaseModel):
+    """Recent activity item"""
+    id: str
+    type: str
+    message: str
+    teamName: str
+    timestamp: str
+
+
+class MentorWorkloadItem(BaseModel):
+    """Mentor workload statistics"""
+    mentorId: str
+    mentorName: str
+    assignedTeams: int
+    onTrack: int
+    atRisk: int
+
+
+class AdminDashboardResponse(BaseModel):
+    """Admin dashboard response"""
+    batchId: str
+    batchName: str
+    overview: DashboardOverview
+    healthDistribution: HealthDistribution
+    recentActivity: List[RecentActivityItem]
+    mentorWorkload: List[MentorWorkloadItem]
+
+
+class MentorOverview(BaseModel):
+    """Mentor dashboard overview"""
+    totalTeams: int
+    onTrack: int
+    atRisk: int
+    critical: int
+
+
+class MentorTeamItem(BaseModel):
+    """Mentor team item in dashboard"""
+    id: str
+    name: str
+    batchId: str
+    batchName: str
+    repoUrl: str
+    healthStatus: str
+    lastActivity: str
+    contributionBalance: int
+    riskFlags: List[str]
+    totalScore: float
+
+
+class MentorActivityItem(BaseModel):
+    """Mentor recent activity item"""
+    teamId: str
+    teamName: str
+    type: str
+    message: str
+    timestamp: str
+
+
+class MentorDashboardResponse(BaseModel):
+    """Mentor dashboard response"""
+    mentorId: str
+    mentorName: str
+    overview: MentorOverview
+    teams: List[MentorTeamItem]
+    recentActivity: List[MentorActivityItem]
+
+
+class UserInfo(BaseModel):
+    """User information"""
+    id: str
+    email: str
+    fullName: str
+    role: str
+    status: str
+    lastLogin: Optional[str] = None
+    createdAt: str
+
+
+class UserListResponse(BaseModel):
+    """User list response"""
+    users: List[UserInfo]
+    total: int
+    page: int
+    pageSize: int
+
+
+class UserRoleUpdateRequest(BaseModel):
+    """User role update request"""
+    role: str = Field(..., pattern="^(admin|mentor)$")
+
+
+class UserRoleUpdateResponse(BaseModel):
+    """User role update response"""
+    user: UserInfo
+    message: str
+
+
+# ==================== Analytics Schemas ====================
+
+class AnalysisScores(BaseModel):
+    """Analysis scores breakdown"""
+    totalScore: float
+    qualityScore: float
+    securityScore: float
+    originalityScore: float
+    architectureScore: float
+    documentationScore: float
+
+
+class ContributorStats(BaseModel):
+    """Contributor statistics"""
+    contributorName: str
+    commits: int
+    percentage: float
+    additions: int
+    deletions: int
+
+
+class CommitTimelineItem(BaseModel):
+    """Commit timeline entry"""
+    date: str
+    commits: int
+    additions: int
+    deletions: int
+
+
+class CommitMetrics(BaseModel):
+    """Commit metrics"""
+    total: int
+    lastWeek: int
+    contributionDistribution: List[ContributorStats]
+    timeline: List[CommitTimelineItem]
+    burstDetected: bool
+    lastMinuteCommits: int
+
+
+class LanguageStats(BaseModel):
+    """Language statistics"""
+    name: str
+    percentage: float
+
+
+class CodeMetrics(BaseModel):
+    """Code metrics"""
+    totalFiles: int
+    totalLinesOfCode: int
+    languages: List[LanguageStats]
+    techStack: List[str]
+    architecturePattern: str
+
+
+class HeatmapPoint(BaseModel):
+    """Heatmap data point"""
+    date: str
+    count: int
+
+
+class HourlyActivityItem(BaseModel):
+    """Hourly activity data"""
+    hour: str
+    commits: int
+
+
+class WeeklyCommitActivityItem(BaseModel):
+    """Weekly commit activity"""
+    week: str
+    commits: int
+    additions: int
+    deletions: int
+
+
+class WarningItem(BaseModel):
+    """Analytics warning"""
+    type: str
+    message: str
+    severity: str
+
+
+class ActivityMetadata(BaseModel):
+    """Activity metadata"""
+    additions: Optional[int] = None
+    deletions: Optional[int] = None
+    files: Optional[int] = None
+
+
+class RecentActivityItem(BaseModel):
+    """Recent activity item"""
+    id: str
+    type: str
+    title: str
+    description: Optional[str] = None
+    author: str
+    date: str
+    metadata: Optional[ActivityMetadata] = None
+
+
+class LanguageBreakdownItem(BaseModel):
+    """Language breakdown item"""
+    name: str
+    value: float
+    color: Optional[str] = None
+
+
+class ContributorActivity(BaseModel):
+    """Enhanced contributor activity"""
+    name: str
+    email: str
+    commits: int
+    additions: int
+    deletions: int
+    percentage: float
+    activeDays: int
+    avgCommitsPerDay: float
+    topFileTypes: List[str]
+    contributionData: List[HeatmapPoint]
+    lastActive: str
+    streak: int
+
+
+class SecurityIssueDetail(BaseModel):
+    """Security issue detail"""
+    type: str
+    severity: str
+    file: str
+    line: int
+    description: str
+
+
+class SecurityMetrics(BaseModel):
+    """Security metrics"""
+    score: float
+    issues: List[SecurityIssueDetail]
+    secretsDetected: int
+
+
+class AIAnalysis(BaseModel):
+    """AI analysis results"""
+    aiGeneratedPercentage: float
+    verdict: str
+    strengths: List[str]
+    improvements: List[str]
+
+
+class TeamAnalyticsResponse(BaseModel):
+    """Team analytics response"""
+    teamId: str
+    teamName: str
+    batchId: str
+    analysis: AnalysisScores
+    commits: CommitMetrics
+    codeMetrics: CodeMetrics
+    security: SecurityMetrics
+    aiAnalysis: AIAnalysis
+    healthStatus: str
+    riskFlags: List[str]
+    lastAnalyzedAt: Optional[str] = None
+    repoUrl: Optional[str] = None
+    createdAt: Optional[str] = None
+    totalCommits: Optional[int] = None
+    totalAdditions: Optional[int] = None
+    totalDeletions: Optional[int] = None
+    activeDays: Optional[int] = None
+    avgCommitsPerDay: Optional[float] = None
+    contributors: Optional[List[ContributorActivity]] = None
+    commitActivity: Optional[List[WeeklyCommitActivityItem]] = None
+    hourlyActivity: Optional[List[HourlyActivityItem]] = None
+    teamContributionData: Optional[List[HeatmapPoint]] = None
+    recentActivities: Optional[List[RecentActivityItem]] = None
+    warnings: Optional[List[WarningItem]] = None
+    languageBreakdown: Optional[List[LanguageBreakdownItem]] = None
+
+
+class CommitDetail(BaseModel):
+    """Individual commit detail"""
+    sha: str
+    author: str
+    authorEmail: str
+    message: str
+    date: str
+    additions: int
+    deletions: int
+    filesChanged: int
+
+
+class TeamCommitsResponse(BaseModel):
+    """Team commits response"""
+    commits: List[CommitDetail]
+    total: int
+    page: int
+    pageSize: int
+
+
+class FileNode(BaseModel):
+    """File tree node"""
+    path: str
+    type: str  # "file" or "directory"
+    size: Optional[int] = None
+    language: Optional[str] = None
+    children: Optional[List['FileNode']] = None
+
+
+# Enable forward references
+FileNode.model_rebuild()
+
+
+class TeamFileTreeResponse(BaseModel):
+    """Team file tree response"""
+    tree: List[FileNode]
+    totalFiles: int
+    totalSize: int
+
+
+# ==================== Reports Schemas ====================
+
+class BatchReportSummary(BaseModel):
+    """Batch report summary"""
+    totalTeams: int
+    averageScore: float
+    topTeam: str
+    topScore: float
+
+
+class BatchReportTeam(BaseModel):
+    """Team data in batch report"""
+    rank: int
+    teamName: str
+    totalScore: float
+    qualityScore: float
+    securityScore: float
+    originalityScore: Optional[float] = None
+    architectureScore: Optional[float] = None
+    documentationScore: Optional[float] = None
+    healthStatus: Optional[str] = None
+    mentorId: Optional[str] = None
+    frameworks: Optional[List[str]] = None
+
+
+class BatchReportInsights(BaseModel):
+    """Batch insights"""
+    mostUsedTech: str
+    averageAiUsage: float
+    totalSecurityIssues: int
+
+
+class BatchReportResponse(BaseModel):
+    """Batch report response"""
+    batchId: str
+    batchName: str
+    generatedAt: str
+    summary: BatchReportSummary
+    teams: List[BatchReportTeam]
+    insights: BatchReportInsights
+
+
+class MentorReportSummary(BaseModel):
+    """Mentor report summary"""
+    totalTeams: int
+    averageScore: float
+    teamsOnTrack: int
+    teamsAtRisk: int
+    teamsCritical: Optional[int] = None
+
+
+class MentorReportTeam(BaseModel):
+    """Team data in mentor report"""
+    teamId: str
+    teamName: str
+    batchId: str
+    totalScore: float
+    qualityScore: float
+    securityScore: float
+    healthStatus: str
+    lastAnalyzed: Optional[str] = None
+
+
+class MentorReportResponse(BaseModel):
+    """Mentor report response"""
+    mentorId: str
+    mentorName: str
+    generatedAt: str
+    teams: List[MentorReportTeam]
+    summary: MentorReportSummary
+
+
+class TeamReportContributor(BaseModel):
+    """Contributor in team report"""
+    name: str
+    commits: int
+    additions: int
+    deletions: int
+
+
+class TeamReportCommits(BaseModel):
+    """Commits section in team report"""
+    total: int
+    contributors: List[TeamReportContributor]
+
+
+class TeamReportCodeMetrics(BaseModel):
+    """Code metrics in team report"""
+    totalFiles: int
+    totalLinesOfCode: int
+    languages: List[Any]
+    techStack: List[str]
+    architecturePattern: str
+
+
+class TeamReportSecurity(BaseModel):
+    """Security section in team report"""
+    score: float
+    issues: List[Any]
+    secretsDetected: int
+
+
+class TeamReportResponse(BaseModel):
+    """Team report response"""
+    teamId: str
+    teamName: str
+    batchId: str
+    generatedAt: str
+    analysis: AnalysisScores
+    commits: TeamReportCommits
+    codeMetrics: TeamReportCodeMetrics
+    security: TeamReportSecurity
+    aiAnalysis: Optional[AIAnalysis] = None
+    healthStatus: str
+    riskFlags: Optional[List[str]] = None
+    lastAnalyzedAt: Optional[str] = None
+

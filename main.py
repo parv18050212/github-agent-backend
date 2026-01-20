@@ -19,7 +19,14 @@ from src.api.backend.routers import (
     frontend_api, 
     auth,
     auth_new,
-    batches
+    batches,
+    teams,
+    mentors,
+    assignments,
+    dashboards,
+    analytics,
+    reports,
+    admin_users
 )
 
 # Create FastAPI app
@@ -33,9 +40,16 @@ app = FastAPI(
 
 # CORS middleware
 cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+if cors_origins == ["*"]:
+    cors_origins = [
+        "http://localhost:8080",
+        "http://localhost:8081",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:8081"
+    ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins if cors_origins != ["*"] else ["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,6 +65,13 @@ app.include_router(auth.router)  # Auth/roles/teams/comments (legacy)
 # New batch management system routers
 app.include_router(auth_new.router)  # New authentication with Google OAuth
 app.include_router(batches.router)  # Batch management (CRUD)
+app.include_router(teams.router)  # Team management (Phase 2)
+app.include_router(mentors.router)  # Mentor management (Phase 3)
+app.include_router(assignments.router)  # Mentor-Team assignments (Phase 3)
+app.include_router(dashboards.router)  # Admin & Mentor dashboards (Phase 4)
+app.include_router(analytics.router)  # Team Analytics (Phase 5)
+app.include_router(reports.router)  # Reports & Analytics (Phase 5)
+app.include_router(admin_users.router)  # Admin User Management (Admin Portal)
 
 
 @app.get("/")

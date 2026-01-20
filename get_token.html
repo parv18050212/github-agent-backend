@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Get Google Auth Token - GitHub Agent</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        // Initialize variables in global scope
+        let supabaseClient = null;
+        
+        // Initialize after DOM loads
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize Supabase client
+            supabaseClient = window.supabase.createClient(
+                'https://frcdvwuapmunkjaarrzr.supabase.co',
+                'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyY2R2d3VhcG11bmtqYWFycnpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc4OTAwOTgsImV4cCI6MjA4MzQ2NjA5OH0.UmC1U9oDtIlPpLioSlEfboyLHIbzt9xHQAqI6lveW1g'
+            );
+            
+            // Check for existing session on page load
+            supabaseClient.auth.getSession().then(({ data: { session } }) => {
+                if (session) {
+                    displayToken(session);
+                }
+            });
+            
+            // Listen for auth state changes
+            supabaseClient.auth.onAuthStateChange((event, session) => {
+                console.log('Auth event:', event);
+                if (event === 'SIGNED_IN' && session) {
+                    displayToken(session);
+                }
+            });
+            
+            // Add event listeners
+            document.getElementById('login-btn').addEventListener('click', login);
+            document.getElementById('copy-btn').addEventListener('click', copyToken);
+        });
+        
+        function showStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.classList.remove('hidden');
+        }
+        
+        async function login() {
+            const btn = document.getElementById('login-btn');
+            btn.disabled = true;
+            btn.textContent = '🔄 Redirecting to Google...';
+            
+            showStatus('Redirecting to Google for authentication...', 'info');
+            
+            try {
+                const { data, error } = await supabaseClient.auth.signInWithOAuth({
+                    provider: 'google',
+                    options: {
+                        redirectTo: window.location.origin + window.location.pathname,
+                        queryParams: {
+                            access_type: 'offline',
+                            prompt: 'consent',
+                        }
+                    }
+                });
+                
+                if (error) {
+                    showStatus(`Error: ${error.message}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = '🚀 Login with Google';
+                }
+            } catch (err) {
+                showStatus(`Unexpected error: ${err.message}`, 'error');
+                btn.disabled = false;
+                btn.textContent = '🚀 Login with Google';
+            }
+        }
+        
+        function displayToken(session) {
+            const token = session.access_token;
+            const user = session.user;
+            
+            // Show token section
+            document.getElementById('login-section').classList.add('hidden');
+            document.getElementById('token-section').classList.remove('hidden');
+            
+            // Display token
+            document.getElementById('token-display').value = token;
+            
+            // Display user info
+            const userInfo = document.getElementById('user-info');
+            userInfo.innerHTML = `
+                <p><strong>Email:</strong> ${user.email}</p>
+                <p><strong>Name:</strong> ${user.user_metadata?.full_name || 'Not set'}</p>
+                <p><strong>User ID:</strong> ${user.id}</p>
+                <p><strong>Token expires:</strong> ${new Date(session.expires_at * 1000).toLocaleString()}</p>
+            `;
+            
+            // Log to console for easy copying
+            console.log('='.repeat(70));
+            console.log('YOUR ACCESS TOKEN:');
+            console.log(token);
+            console.log('='.repeat(70));
+            console.log('User:', user.email);
+            console.log('Expires:', new Date(session.expires_at * 1000).toLocaleString());
+            console.log('='.repeat(70));
+        }
+        
+        function copyToken() {
+            const tokenDisplay = document.getElementById('token-display');
+            tokenDisplay.select();
+            document.execCommand('copy');
+            
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = '✓ Copied!';
+            setTimeout(() => {
+                btn.textContent = originalText;
+            }, 2000);
+        }
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .info-box {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 5px;
+        }
+        
+        .info-box h3 {
+            color: #667eea;
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+        
+        .info-box p {
+            color: #555;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 16px;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .token-container {
+            margin-top: 25px;
+        }
+        
+        .token-container h2 {
+            color: #333;
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+        
+        textarea {
+            width: 100%;
+            min-height: 150px;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            resize: vertical;
+            margin-bottom: 10px;
+        }
+        
+        .copy-btn {
+            background: #28a745;
+            padding: 10px 25px;
+            font-size: 14px;
+        }
+        
+        .copy-btn:hover {
+            background: #218838;
+        }
+        
+        .user-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+        
+        .user-info p {
+            margin: 5px 0;
+            font-size: 14px;
+            color: #555;
+        }
+        
+        .user-info strong {
+            color: #333;
+        }
+        
+        .instructions {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+        }
+        
+        .instructions h3 {
+            color: #856404;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+        
+        .instructions code {
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #c7254e;
+        }
+        
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Get Google Auth Token</h1>
+        <p class="subtitle">GitHub Agent - Authentication Testing Tool</p>
+        
+        <div class="info-box">
+            <h3>ℹ️ What is this?</h3>
+            <p>
+                This tool helps you get a Google authentication token to test the GitHub Agent API. 
+                Click the button below to sign in with your Google account, and we'll provide you with 
+                an access token you can use with the backend API.
+            </p>
+        </div>
+        
+        <div id="login-section">
+            <button id="login-btn">
+                🚀 Login with Google
+            </button>
+            <div id="status" class="status hidden"></div>
+        </div>
+        
+        <div id="token-section" class="token-container hidden">
+            <h2>✅ Your Access Token</h2>
+            <textarea id="token-display" readonly></textarea>
+            <button class="copy-btn" id="copy-btn">📋 Copy Token</button>
+            
+            <div id="user-info" class="user-info"></div>
+            
+            <div class="instructions">
+                <h3>📝 Next Steps:</h3>
+                <p>1. Copy the token above</p>
+                <p>2. Run: <code>python test_real_auth.py</code></p>
+                <p>3. When prompted, paste the token</p>
+                <p>4. The script will test all authenticated endpoints</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

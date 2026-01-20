@@ -2,7 +2,7 @@
 Authentication and Authorization Middleware
 Handles JWT verification, role-based access control, and user context
 """
-from fastapi import HTTPException, Security, Depends, status
+from fastapi import HTTPException, Security, Depends, status, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, List
 from uuid import UUID
@@ -43,14 +43,15 @@ async def get_current_user(
 ) -> AuthUser:
     """
     Verify JWT token and return current user
-    Extracts user from Supabase JWT token
+    Fetches FRESH role from Supabase Admin API (not cached JWT claims)
+    This ensures role changes take effect immediately without logout
     """
     token = credentials.credentials
     
     try:
         supabase = get_supabase_client()
         
-        # Get user from Supabase using the token
+        # Get user from Supabase using the token (validates the token)
         user_response = supabase.auth.get_user(token)
         
         if not user_response or not user_response.user:
@@ -61,13 +62,31 @@ async def get_current_user(
             )
         
         user = user_response.user
+        user_id = user.id
         
-        # Get user metadata (includes role)
+        # Get user metadata from the token response (may be stale)
         user_metadata = user.user_metadata or {}
-        app_metadata = user.app_metadata or {}
         
-        # Try to get role from metadata (app_metadata takes precedence)
-        role = app_metadata.get("role") or user_metadata.get("role") or "mentor"
+        # IMPORTANT: Fetch FRESH role from Supabase Admin API
+        # This ensures role changes take effect immediately without logout
+        role = "mentor"  # Default fallback
+        try:
+            admin_client = get_supabase_admin_client()
+            admin_user = admin_client.auth.admin.get_user_by_id(user_id)
+            if admin_user and admin_user.user:
+                fresh_app_metadata = admin_user.user.app_metadata or {}
+                fresh_user_metadata = admin_user.user.user_metadata or {}
+                role = fresh_app_metadata.get("role") or fresh_user_metadata.get("role") or "mentor"
+                print(f"[Auth] Fresh role from Admin API: {role} (app_metadata: {fresh_app_metadata})")
+            else:
+                print(f"[Auth] Admin API returned no user data")
+        except Exception as admin_err:
+            # Fallback to token claims if admin API fails
+            print(f"[Auth] Admin API error, falling back to token: {admin_err}")
+            app_metadata = user.app_metadata or {}
+            role = app_metadata.get("role") or user_metadata.get("role") or "mentor"
+        
+        print(f"[Auth] Final role for {user.email}: {role}")
         
         # Get full name
         full_name = user_metadata.get("full_name") or user_metadata.get("name")
@@ -90,18 +109,32 @@ async def get_current_user(
 
 
 async def get_optional_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Security(security, auto_error=False)
+    authorization: Optional[str] = Header(None)
 ) -> Optional[AuthUser]:
     """
     Get current user if token is provided, otherwise return None
     Used for endpoints that work both authenticated and unauthenticated
+    
+    Usage:
+        async def endpoint(user: Optional[AuthUser] = Depends(get_optional_user)):
+            ...
     """
-    if not credentials:
+    if not authorization:
         return None
     
     try:
+        # Parse Bearer token
+        if not authorization.startswith("Bearer "):
+            return None
+        
+        token = authorization.replace("Bearer ", "")
+        
+        # Create credentials object
+        from fastapi.security import HTTPAuthorizationCredentials
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        
         return await get_current_user(credentials)
-    except HTTPException:
+    except Exception:
         return None
 
 

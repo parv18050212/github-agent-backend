@@ -265,7 +265,114 @@ class DataMapper:
             except Exception as e:
                 batch_logger.error(f"Failed to save team members: {e}")
             
-            # 5. Invalidate cache for this project
+            # 5. Create analysis snapshot if this is part of a batch run
+            try:
+                from src.api.backend.database import get_supabase_admin_client
+                supabase = get_supabase_admin_client()
+                
+                # Get project details to check for batch_run metadata
+                project_result = supabase.table("projects").select("id, team_id, batch_id").eq("id", str(project_id)).execute()
+                
+                if project_result.data and len(project_result.data) > 0:
+                    project = project_result.data[0]
+                    team_id = project.get("team_id")
+                    batch_id = project.get("batch_id")
+                    
+                    if team_id and batch_id:
+                        # Check if there's an active batch run
+                        run_result = supabase.table("batch_analysis_runs")\
+                            .select("id, run_number")\
+                            .eq("batch_id", batch_id)\
+                            .eq("status", "running")\
+                            .order("run_number", desc=True)\
+                            .limit(1)\
+                            .execute()
+                        
+                        if run_result.data and len(run_result.data) > 0:
+                            batch_run = run_result.data[0]
+                            batch_run_id = batch_run["id"]
+                            run_number = batch_run["run_number"]
+                            
+                            # Create snapshot
+                            snapshot_data = {
+                                "team_id": team_id,
+                                "batch_run_id": batch_run_id,
+                                "project_id": str(project_id),
+                                "run_number": run_number,
+                                "total_score": scores.get("total_score"),
+                                "originality_score": scores.get("originality_score"),
+                                "quality_score": scores.get("quality_score"),
+                                "security_score": scores.get("security_score"),
+                                "effort_score": scores.get("effort_score"),
+                                "implementation_score": scores.get("implementation_score"),
+                                "engineering_score": scores.get("engineering_score"),
+                                "organization_score": scores.get("organization_score"),
+                                "documentation_score": scores.get("documentation_score"),
+                                "commit_count": report.get("total_commits", 0),
+                                "file_count": len(report.get("files", [])),
+                                "lines_of_code": sum(f.get("lines", 0) for f in report.get("files", [])),
+                                "tech_stack_count": len(report.get("stack", [])),
+                                "issue_count": len(report.get("security", {}).get("issues", []))
+                            }
+                            
+                            # Insert or update snapshot (in case of re-analysis)
+                            existing_snapshot = supabase.table("analysis_snapshots")\
+                                .select("id")\
+                                .eq("team_id", team_id)\
+                                .eq("run_number", run_number)\
+                                .execute()
+                            
+                            if existing_snapshot.data and len(existing_snapshot.data) > 0:
+                                # Update existing snapshot
+                                supabase.table("analysis_snapshots")\
+                                    .update(snapshot_data)\
+                                    .eq("id", existing_snapshot.data[0]["id"])\
+                                    .execute()
+                                batch_logger.info(f"Updated analysis snapshot for team {team_id}, run {run_number}")
+                            else:
+                                # Create new snapshot
+                                supabase.table("analysis_snapshots").insert(snapshot_data).execute()
+                                batch_logger.info(f"Created analysis snapshot for team {team_id}, run {run_number}")
+                            
+                            # Update batch run statistics
+                            completed_count = supabase.table("analysis_snapshots")\
+                                .select("id", count="exact")\
+                                .eq("batch_run_id", batch_run_id)\
+                                .execute()
+                            
+                            completed = completed_count.count if completed_count.count else 0
+                            
+                            # Get all snapshots for average score
+                            all_snapshots = supabase.table("analysis_snapshots")\
+                                .select("total_score")\
+                                .eq("batch_run_id", batch_run_id)\
+                                .execute()
+                            
+                            if all_snapshots.data:
+                                avg_score = sum(s.get("total_score") or 0 for s in all_snapshots.data) / len(all_snapshots.data)
+                            else:
+                                avg_score = None
+                            
+                            # Update run progress
+                            run_update = {
+                                "completed_teams": completed,
+                                "avg_score": avg_score
+                            }
+                            
+                            # Check if all teams completed
+                            run_info = supabase.table("batch_analysis_runs").select("total_teams").eq("id", batch_run_id).execute()
+                            if run_info.data and completed >= run_info.data[0]["total_teams"]:
+                                run_update["status"] = "completed"
+                                run_update["completed_at"] = datetime.now().isoformat()
+                            
+                            supabase.table("batch_analysis_runs").update(run_update).eq("id", batch_run_id).execute()
+                            batch_logger.info(f"Updated batch run statistics: {completed} teams completed")
+                        
+            except Exception as e:
+                batch_logger.warning(f"Failed to create analysis snapshot: {e}")
+                # Don't fail the whole save if snapshot creation fails
+            
+            # 6. Invalidate cache for this project
             try:
                 cache.invalidate_project(str(project_id))
                 batch_logger.info(f"Cache invalidated for project {project_id}")

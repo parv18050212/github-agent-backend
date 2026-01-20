@@ -31,6 +31,10 @@ def generate_tree_structure(startpath: str, max_depth: int = 3) -> str:
     """
     Generates a visual directory tree string.
     """
+    # Validate startpath
+    if not startpath or not os.path.exists(startpath):
+        return f"Tree structure unavailable: invalid path ({startpath})"
+    
     tree_lines = []
     
     # Calculate base depth to calculate relative level

@@ -5,6 +5,10 @@ def generate_repo_summary(repo_path: str, max_chars: int = 40000) -> str:
     """
     Compresses the repository into a text summary for the LLM.
     """
+    # Validate repo_path
+    if not repo_path or not os.path.exists(repo_path):
+        return f"Repository summary unavailable: invalid path ({repo_path})"
+    
     summary = []
     
     # 1. Directory Tree

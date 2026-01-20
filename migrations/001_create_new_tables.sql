@@ -2,6 +2,47 @@
 -- Date: 2026-01-17
 -- Description: Adds batches, teams, students, mentor_team_assignments tables
 
+-- ==================== RENAME OLD TABLES ====================
+-- The old 'batches' table is for batch analysis jobs, not academic batches
+-- Rename it to avoid conflicts
+DO $$ 
+BEGIN
+    -- Check if old batches table exists with the old structure
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'batches' AND column_name = 'total_repos'
+    ) THEN
+        -- Rename old batches table to analysis_batches
+        ALTER TABLE batches RENAME TO analysis_batches;
+        
+        -- Update foreign key references in analysis_jobs
+        ALTER TABLE analysis_jobs DROP CONSTRAINT IF EXISTS analysis_jobs_batch_id_fkey;
+        ALTER TABLE analysis_jobs ADD CONSTRAINT analysis_jobs_batch_id_fkey 
+            FOREIGN KEY (batch_id) REFERENCES analysis_batches(id) ON DELETE SET NULL;
+    END IF;
+    
+    -- Check if old teams table exists (different from our new structure)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'teams' AND column_name = 'mentor_id'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'teams' AND column_name = 'batch_id'
+    ) THEN
+        -- This is the old teams table, rename it
+        ALTER TABLE teams RENAME TO user_teams;
+        
+        -- Update foreign key references
+        ALTER TABLE team_memberships DROP CONSTRAINT IF EXISTS team_memberships_team_id_fkey;
+        ALTER TABLE team_memberships ADD CONSTRAINT team_memberships_team_id_fkey 
+            FOREIGN KEY (team_id) REFERENCES user_teams(id) ON DELETE CASCADE;
+            
+        ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_team_id_fkey;
+        ALTER TABLE projects ADD CONSTRAINT projects_team_id_fkey 
+            FOREIGN KEY (team_id) REFERENCES user_teams(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
 -- ==================== BATCHES TABLE ====================
 CREATE TABLE IF NOT EXISTS batches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -22,8 +63,44 @@ CREATE TABLE IF NOT EXISTS batches (
 );
 
 -- Index for faster queries
-CREATE INDEX idx_batches_status ON batches(status);
-CREATE INDEX idx_batches_year ON batches(year);
+CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status);
+CREATE INDEX IF NOT EXISTS idx_batches_year ON batches(year);
+
+-- Ensure all columns exist (for incremental migrations)
+DO $$ 
+BEGIN
+    -- Add year column if missing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'batches' AND column_name = 'year'
+    ) THEN
+        ALTER TABLE batches ADD COLUMN year INTEGER NOT NULL DEFAULT 2024;
+    END IF;
+    
+    -- Add semester column if missing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'batches' AND column_name = 'semester'
+    ) THEN
+        ALTER TABLE batches ADD COLUMN semester VARCHAR(50) NOT NULL DEFAULT '4th Sem';
+    END IF;
+    
+    -- Add team_count column if missing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'batches' AND column_name = 'team_count'
+    ) THEN
+        ALTER TABLE batches ADD COLUMN team_count INTEGER DEFAULT 0;
+    END IF;
+    
+    -- Add student_count column if missing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'batches' AND column_name = 'student_count'
+    ) THEN
+        ALTER TABLE batches ADD COLUMN student_count INTEGER DEFAULT 0;
+    END IF;
+END $$;
 
 -- ==================== TEAMS TABLE ====================
 CREATE TABLE IF NOT EXISTS teams (
@@ -44,10 +121,42 @@ CREATE TABLE IF NOT EXISTS teams (
 );
 
 -- Indexes
-CREATE INDEX idx_teams_batch_id ON teams(batch_id);
-CREATE INDEX idx_teams_mentor_id ON teams(mentor_id);
-CREATE INDEX idx_teams_project_id ON teams(project_id);
-CREATE INDEX idx_teams_health_status ON teams(health_status);
+CREATE INDEX IF NOT EXISTS idx_teams_batch_id ON teams(batch_id);
+CREATE INDEX IF NOT EXISTS idx_teams_mentor_id ON teams(mentor_id);
+CREATE INDEX IF NOT EXISTS idx_teams_project_id ON teams(project_id);
+CREATE INDEX IF NOT EXISTS idx_teams_health_status ON teams(health_status);
+
+-- Ensure all teams columns exist
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'teams' AND column_name = 'health_status'
+    ) THEN
+        ALTER TABLE teams ADD COLUMN health_status VARCHAR(50) DEFAULT 'on_track';
+    END IF;
+    
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'teams' AND column_name = 'risk_flags'
+    ) THEN
+        ALTER TABLE teams ADD COLUMN risk_flags TEXT[];
+    END IF;
+    
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'teams' AND column_name = 'last_activity'
+    ) THEN
+        ALTER TABLE teams ADD COLUMN last_activity TIMESTAMP WITH TIME ZONE;
+    END IF;
+    
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'teams' AND column_name = 'student_count'
+    ) THEN
+        ALTER TABLE teams ADD COLUMN student_count INTEGER DEFAULT 0;
+    END IF;
+END $$;
 
 -- ==================== STUDENTS TABLE ====================
 CREATE TABLE IF NOT EXISTS students (
@@ -66,9 +175,9 @@ CREATE TABLE IF NOT EXISTS students (
 );
 
 -- Indexes
-CREATE INDEX idx_students_team_id ON students(team_id);
-CREATE INDEX idx_students_email ON students(email);
-CREATE INDEX idx_students_github ON students(github_username);
+CREATE INDEX IF NOT EXISTS idx_students_team_id ON students(team_id);
+CREATE INDEX IF NOT EXISTS idx_students_email ON students(email);
+CREATE INDEX IF NOT EXISTS idx_students_github ON students(github_username);
 
 -- ==================== MENTOR_TEAM_ASSIGNMENTS TABLE ====================
 CREATE TABLE IF NOT EXISTS mentor_team_assignments (
@@ -83,9 +192,9 @@ CREATE TABLE IF NOT EXISTS mentor_team_assignments (
 );
 
 -- Indexes
-CREATE INDEX idx_mentor_assignments_mentor_id ON mentor_team_assignments(mentor_id);
-CREATE INDEX idx_mentor_assignments_team_id ON mentor_team_assignments(team_id);
-CREATE INDEX idx_mentor_assignments_batch_id ON mentor_team_assignments(batch_id);
+CREATE INDEX IF NOT EXISTS idx_mentor_assignments_mentor_id ON mentor_team_assignments(mentor_id);
+CREATE INDEX IF NOT EXISTS idx_mentor_assignments_team_id ON mentor_team_assignments(team_id);
+CREATE INDEX IF NOT EXISTS idx_mentor_assignments_batch_id ON mentor_team_assignments(batch_id);
 
 -- ==================== UPDATE EXISTING TABLES ====================
 
@@ -97,7 +206,7 @@ BEGIN
         WHERE table_name = 'projects' AND column_name = 'batch_id'
     ) THEN
         ALTER TABLE projects ADD COLUMN batch_id UUID REFERENCES batches(id) ON DELETE SET NULL;
-        CREATE INDEX idx_projects_batch_id ON projects(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_projects_batch_id ON projects(batch_id);
     END IF;
 END $$;
 
@@ -113,16 +222,19 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Triggers for updated_at
+DROP TRIGGER IF EXISTS update_batches_updated_at ON batches;
 CREATE TRIGGER update_batches_updated_at
     BEFORE UPDATE ON batches
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_teams_updated_at ON teams;
 CREATE TRIGGER update_teams_updated_at
     BEFORE UPDATE ON teams
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_students_updated_at ON students;
 CREATE TRIGGER update_students_updated_at
     BEFORE UPDATE ON students
     FOR EACH ROW
@@ -146,6 +258,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger for batch counts
+DROP TRIGGER IF EXISTS update_batch_team_count ON teams;
 CREATE TRIGGER update_batch_team_count
     AFTER INSERT OR DELETE ON teams
     FOR EACH ROW
@@ -188,6 +301,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger for team student count
+DROP TRIGGER IF EXISTS update_team_student_count_trigger ON students;
 CREATE TRIGGER update_team_student_count_trigger
     AFTER INSERT OR DELETE ON students
     FOR EACH ROW
@@ -202,23 +316,28 @@ ALTER TABLE students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mentor_team_assignments ENABLE ROW LEVEL SECURITY;
 
 -- Policies for batches table
+DROP POLICY IF EXISTS "Public can view active batches" ON batches;
 CREATE POLICY "Public can view active batches"
     ON batches FOR SELECT
     USING (status = 'active');
 
+DROP POLICY IF EXISTS "Admins can manage all batches" ON batches;
 CREATE POLICY "Admins can manage all batches"
     ON batches FOR ALL
     USING (auth.jwt() ->> 'role' = 'admin');
 
 -- Policies for teams table
+DROP POLICY IF EXISTS "Public can view teams" ON teams;
 CREATE POLICY "Public can view teams"
     ON teams FOR SELECT
     USING (true);
 
+DROP POLICY IF EXISTS "Admins can manage all teams" ON teams;
 CREATE POLICY "Admins can manage all teams"
     ON teams FOR ALL
     USING (auth.jwt() ->> 'role' = 'admin');
 
+DROP POLICY IF EXISTS "Mentors can view their assigned teams" ON teams;
 CREATE POLICY "Mentors can view their assigned teams"
     ON teams FOR SELECT
     USING (
@@ -231,19 +350,23 @@ CREATE POLICY "Mentors can view their assigned teams"
     );
 
 -- Policies for students table
+DROP POLICY IF EXISTS "Public can view students" ON students;
 CREATE POLICY "Public can view students"
     ON students FOR SELECT
     USING (true);
 
+DROP POLICY IF EXISTS "Admins can manage all students" ON students;
 CREATE POLICY "Admins can manage all students"
     ON students FOR ALL
     USING (auth.jwt() ->> 'role' = 'admin');
 
 -- Policies for mentor_team_assignments table
+DROP POLICY IF EXISTS "Mentors can view their assignments" ON mentor_team_assignments;
 CREATE POLICY "Mentors can view their assignments"
     ON mentor_team_assignments FOR SELECT
     USING (mentor_id::text = auth.jwt() ->> 'sub');
 
+DROP POLICY IF EXISTS "Admins can manage all assignments" ON mentor_team_assignments;
 CREATE POLICY "Admins can manage all assignments"
     ON mentor_team_assignments FOR ALL
     USING (auth.jwt() ->> 'role' = 'admin');

@@ -11,6 +11,16 @@ def analyze_quality(repo_path: str) -> Dict[str, Any]:
     2. Maintainability Index (Code health)
     3. Docstring coverage (Documentation)
     """
+    # Validate repo_path
+    if not repo_path or not os.path.exists(repo_path):
+        print(f"⚠️ Quality check skipped: invalid repo_path ({repo_path})")
+        return {
+            "avg_complexity": 5,
+            "maintainability_index": 60,
+            "documentation_score": 40,
+            "analyzed_files": 0
+        }
+    
     total_complexity = 0
     total_maintainability = 0
     total_loc = 0

@@ -12,6 +12,10 @@ def generate_dashboard(metrics: dict, file_data: list, output_path: str = "hacka
     1. Radar Chart: Overall Project Health
     2. Scatter Plot: File-wise Risk Analysis (Algorithmic vs LLM)
     """
+    # Validate output_path
+    if not output_path or output_path == "N/A":
+        output_path = "hackathon_report.png"
+    
     # Create figure with 2 subplots
     fig = plt.figure(figsize=(14, 7))
     plt.suptitle(f"Hackathon Forensic Audit Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}", fontsize=16, weight='bold')

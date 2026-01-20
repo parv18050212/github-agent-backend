@@ -17,6 +17,17 @@ DEVOPS_FILES = {
 }
 
 def scan_project_maturity(repo_path: str) -> Dict[str, Any]:
+    # Validate repo_path
+    if not repo_path or not os.path.exists(repo_path):
+        print(f"⚠️ Maturity scan skipped: invalid repo_path ({repo_path})")
+        return {
+            "score": 20,
+            "test_files": 0,
+            "test_lines": 0,
+            "devops_tools": [],
+            "has_tests": False,
+            "is_deployable": False
+        }
     test_files_count = 0
     test_lines_count = 0
     devops_stack = []

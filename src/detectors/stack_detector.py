@@ -2,6 +2,11 @@ import os
 from typing import List
 
 def detect_tech_stack(repo_path: str) -> List[str]:
+    # Validate repo_path
+    if not repo_path or not os.path.exists(repo_path):
+        print(f"⚠️ Tech stack detection skipped: invalid repo_path ({repo_path})")
+        return ["Unknown"]
+    
     stack = set()
     files = set()
     

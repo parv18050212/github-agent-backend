@@ -167,20 +167,63 @@ def node_aggregator(ctx):
     
     print(f"[10/10] 📊 Generating Final Evaluation Report...")
     
-    # Inputs
+    # Inputs with type validation
     repo_path = ctx.get("repo_path")
-    qual = ctx.get("quality_metrics", {})
-    comm = ctx.get("commit_analysis", {})
-    sec = ctx.get("security_report", {})
-    llm = ctx.get("llm_data", {})
-    plag = ctx.get("plag_data", {})
-    stack = ctx.get("tech_stack", [])
-    judge = ctx.get("ai_judgment", {})
-    mat = ctx.get("maturity", {})
-    struct = ctx.get("structure", {})
+    
+    # Ensure all inputs are dicts (not lists or None)
+    qual = ctx.get("quality_metrics") or {}
+    if not isinstance(qual, dict):
+        print(f"⚠️ Warning: quality_metrics is {type(qual)}, using empty dict")
+        qual = {}
+    
+    comm = ctx.get("commit_analysis") or {}
+    if not isinstance(comm, dict):
+        print(f"⚠️ Warning: commit_analysis is {type(comm)}, using empty dict")
+        comm = {}
+    
+    sec = ctx.get("security_report") or {}
+    if not isinstance(sec, dict):
+        print(f"⚠️ Warning: security_report is {type(sec)}, using empty dict")
+        sec = {}
+    
+    llm = ctx.get("llm_data") or {}
+    if not isinstance(llm, dict):
+        print(f"⚠️ Warning: llm_data is {type(llm)}, using empty dict")
+        llm = {}
+    
+    plag = ctx.get("plag_data") or {}
+    if not isinstance(plag, dict):
+        print(f"⚠️ Warning: plag_data is {type(plag)}, using empty dict")
+        plag = {}
+    
+    stack = ctx.get("tech_stack") or []
+    if not isinstance(stack, list):
+        print(f"⚠️ Warning: tech_stack is {type(stack)}, using empty list")
+        stack = []
+    
+    judge = ctx.get("ai_judgment") or {}
+    if not isinstance(judge, dict):
+        print(f"⚠️ Warning: ai_judgment is {type(judge)}, using empty dict")
+        judge = {}
+    
+    mat = ctx.get("maturity") or {}
+    if not isinstance(mat, dict):
+        print(f"⚠️ Warning: maturity is {type(mat)}, using empty dict")
+        mat = {}
+    
+    struct = ctx.get("structure") or {}
+    if not isinstance(struct, dict):
+        print(f"⚠️ Warning: structure is {type(struct)}, using empty dict")
+        struct = {}
     
     # --- Generate Tree (For Output) ---
-    repo_tree = generate_tree_structure(repo_path)
+    repo_tree = "Tree generation skipped (missing repo_path)" 
+    if repo_path and os.path.exists(repo_path):
+        try:
+            repo_tree = generate_tree_structure(repo_path)
+        except Exception as e:
+            print(f"⚠️ Tree generation failed: {e}")
+            repo_tree = f"Tree generation failed: {str(e)}"
 
     # --- Process Files ---
     detailed_files = []
@@ -226,10 +269,14 @@ def node_aggregator(ctx):
     }
     
     # --- Viz ---
-    viz_path = os.path.join(ctx.get("output_dir", "."), "scorecard.png")
+    output_dir = ctx.get("output_dir") or "."
+    if not output_dir:
+        output_dir = "."
+    viz_path = os.path.join(output_dir, "scorecard.png")
     try:
         generate_dashboard(scores, viz_files, viz_path)
-    except:
+    except Exception as e:
+        print(f"⚠️ Dashboard generation failed: {e}")
         viz_path = "N/A"
 
     return {
@@ -331,6 +378,10 @@ def clean_winner_text(text):
     return text
 
 def save_csv_results(output_dir, team_name, data):
+    # Validate output_dir
+    if not output_dir:
+        output_dir = "."
+    
     scores = data.get("scores", {})
     judge = data.get("judge", {})
     mat = data.get("maturity", {})

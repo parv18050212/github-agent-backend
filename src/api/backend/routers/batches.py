@@ -356,6 +356,343 @@ async def update_batch(
         )
 
 
+@router.post(
+    "/{batch_id}/analyze",
+    dependencies=[Depends(RoleChecker(["admin"]))]
+)
+async def trigger_batch_analysis(
+    batch_id: UUID,
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Trigger weekly analysis for all teams in a batch (Admin only)
+    
+    Creates a new batch_analysis_run and queues analysis jobs for all teams using Celery.
+    
+    **Permissions:** Admin only
+    """
+    try:
+        # Import Celery task
+        try:
+            from celery_worker import process_batch_sequential
+            CELERY_ENABLED = True
+        except ImportError:
+            CELERY_ENABLED = False
+        
+        supabase = get_supabase_admin_client()
+        
+        # Check if batch exists
+        batch_result = supabase.table("batches")\
+            .select("id, start_date")\
+            .eq("id", str(batch_id))\
+            .execute()
+        
+        if not batch_result.data or len(batch_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Batch not found"
+            )
+        
+        # Calculate current week number
+        batch = batch_result.data[0]
+        
+        # Get all teams in this batch with projects
+        teams_result = supabase.table("teams")\
+            .select("id, team_name, project_id, projects(id, repo_url, status)")\
+            .eq("batch_id", str(batch_id))\
+            .execute()
+        
+        teams = teams_result.data or []
+        total_teams = len(teams)
+        
+        if total_teams == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No teams found in this batch"
+            )
+        
+        # Get current run number (last run + 1)
+        last_run_result = supabase.table("batch_analysis_runs")\
+            .select("run_number")\
+            .eq("batch_id", str(batch_id))\
+            .order("run_number", desc=True)\
+            .limit(1)\
+            .execute()
+        
+        run_number = 1
+        if last_run_result.data and len(last_run_result.data) > 0:
+            run_number = last_run_result.data[0]["run_number"] + 1
+        
+        # Create batch analysis run
+        run_insert = {
+            "batch_id": str(batch_id),
+            "run_number": run_number,
+            "status": "pending",
+            "total_teams": total_teams,
+            "completed_teams": 0,
+            "failed_teams": 0
+        }
+        
+        run_result = supabase.table("batch_analysis_runs")\
+            .insert(run_insert)\
+            .execute()
+        
+        if not run_result.data or len(run_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create batch analysis run"
+            )
+        
+        run_id = run_result.data[0]["id"]
+        
+        # Build repos list for batch processing
+        repos = []
+        jobs_created = 0
+        jobs_skipped = 0
+        
+        for team in teams:
+            project = team.get("projects")
+            if not project:
+                jobs_skipped += 1
+                continue
+            
+            project_id = project[0]["id"] if isinstance(project, list) else project["id"]
+            repo_url = project[0]["repo_url"] if isinstance(project, list) else project["repo_url"]
+            
+            # Create analysis job
+            job_insert = {
+                "project_id": project_id,
+                "status": "queued",
+                "requested_by": str(current_user.user_id),
+                "metadata": {
+                    "batch_run_id": run_id,
+                    "run_number": run_number,
+                    "team_id": team["id"]
+                }
+            }
+            
+            try:
+                job_result = supabase.table("analysis_jobs").insert(job_insert).execute()
+                job_id = job_result.data[0]["id"]
+                
+                # Update project status
+                supabase.table("projects").update({
+                    "status": "queued"
+                }).eq("id", project_id).execute()
+                
+                repos.append({
+                    "project_id": project_id,
+                    "job_id": job_id,
+                    "repo_url": repo_url,
+                    "team_name": team["team_name"]
+                })
+                jobs_created += 1
+            except Exception as e:
+                print(f"Failed to create job for team {team['team_name']}: {e}")
+                jobs_skipped += 1
+        
+        # Queue Celery batch task (or fallback to sequential processing)
+        celery_queued = False
+        if CELERY_ENABLED and repos:
+            try:
+                task = process_batch_sequential.delay(str(batch_id), repos)
+                # Store Celery task ID
+                supabase.table("batch_analysis_runs").update({
+                    "status": "running",
+                    "started_at": datetime.now().isoformat(),
+                    "metadata": {"celery_task_id": task.id}
+                }).eq("id", run_id).execute()
+                celery_queued = True
+                print(f"✓ Batch analysis queued via Celery (task_id: {task.id})")
+            except Exception as celery_error:
+                print(f"⚠ Celery queueing failed: {celery_error}")
+                print("  Falling back to in-process background tasks...")
+        
+        # Fallback: Use old background task method
+        if not celery_queued:
+            supabase.table("batch_analysis_runs").update({
+                "status": "running",
+                "started_at": datetime.now().isoformat()
+            }).eq("id", run_id).execute()
+            
+            # Check if background module exists
+            try:
+                from src.api.backend.background import run_batch_sequential
+                import asyncio
+                asyncio.create_task(run_batch_sequential(str(batch_id), repos))
+                print(f"✓ Batch analysis queued via background tasks")
+            except ImportError:
+                print("⚠ Background task module not found - jobs created but not processing")
+        
+        return {
+            "run_id": run_id,
+            "run_number": run_number,
+            "status": "running",
+            "total_teams": total_teams,
+            "jobs_created": jobs_created,
+            "jobs_skipped": jobs_skipped,
+            "message": f"Batch analysis run {run_number} started with {jobs_created} teams queued"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger batch analysis: {str(e)}"
+        )
+
+
+@router.get(
+    "/{batch_id}/runs"
+)
+async def get_batch_analysis_runs(
+    batch_id: UUID,
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Get all analysis runs for a batch
+    
+    Returns list of weekly analysis runs with statistics.
+    
+    **Permissions:** Authenticated users
+    """
+    try:
+        supabase = get_supabase_admin_client()
+        
+        # Check if batch exists
+        batch_result = supabase.table("batches")\
+            .select("id")\
+            .eq("id", str(batch_id))\
+            .execute()
+        
+        if not batch_result.data or len(batch_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Batch not found"
+            )
+        
+        # Get all runs for this batch
+        runs_result = supabase.table("batch_analysis_runs")\
+            .select("*")\
+            .eq("batch_id", str(batch_id))\
+            .order("run_number", desc=True)\
+            .execute()
+        
+        runs = runs_result.data or []
+        
+        return {
+            "batch_id": str(batch_id),
+            "runs": runs,
+            "total_runs": len(runs)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch batch runs: {str(e)}"
+        )
+
+
+@router.get(
+    "/{batch_id}/progress"
+)
+async def get_batch_progress(
+    batch_id: UUID,
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Get current analysis run progress for a batch
+    
+    Returns status of the most recent analysis run (for UI polling).
+    
+    **Permissions:** Authenticated users
+    """
+    try:
+        supabase = get_supabase_admin_client()
+        
+        # Check if batch exists
+        batch_result = supabase.table("batches")\
+            .select("id, name")\
+            .eq("id", str(batch_id))\
+            .execute()
+        
+        if not batch_result.data or len(batch_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Batch not found"
+            )
+        
+        # Get most recent run
+        runs_result = supabase.table("batch_analysis_runs")\
+            .select("*")\
+            .eq("batch_id", str(batch_id))\
+            .order("run_number", desc=True)\
+            .limit(1)\
+            .execute()
+        
+        if not runs_result.data or len(runs_result.data) == 0:
+            # No runs yet
+            return {
+                "status": "pending",
+                "processed_teams": 0,
+                "total_teams": 0,
+                "current_team": None,
+                "start_time": None,
+                "end_time": None,
+                "successful_analyses": 0,
+                "failed_analyses": 0
+            }
+        
+        latest_run = runs_result.data[0]
+        
+        # Determine status based on run data
+        status_map = {
+            "pending": "pending",
+            "running": "in_progress",
+            "completed": "completed",
+            "failed": "failed"
+        }
+        
+        status = status_map.get(latest_run["status"], "pending")
+        
+        # Get current job being processed (if any)
+        current_team_name = None
+        if status == "in_progress":
+            current_job = supabase.table("analysis_jobs")\
+                .select("teams(team_name)")\
+                .eq("status", "processing")\
+                .eq("batch_id", str(batch_id))\
+                .limit(1)\
+                .execute()
+            
+            if current_job.data and len(current_job.data) > 0:
+                teams_data = current_job.data[0].get("teams")
+                if teams_data:
+                    current_team_name = teams_data.get("team_name") if isinstance(teams_data, dict) else None
+        
+        return {
+            "status": status,
+            "processed_teams": latest_run["completed_teams"] + latest_run["failed_teams"],
+            "total_teams": latest_run["total_teams"],
+            "current_team": current_team_name,
+            "start_time": latest_run.get("started_at"),
+            "end_time": latest_run.get("completed_at"),
+            "successful_analyses": latest_run["completed_teams"],
+            "failed_analyses": latest_run["failed_teams"]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch batch progress: {str(e)}"
+        )
+
+
 @router.delete(
     "/{batch_id}",
     status_code=status.HTTP_204_NO_CONTENT,

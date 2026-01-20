@@ -148,42 +148,37 @@ async def get_current_user_profile(current_user: AuthUser = Depends(get_current_
     
     **Requires:** Valid JWT token
     
-    **Returns:** User profile with role and metadata
+    **Returns:** User profile with FRESH role from Supabase Admin API
     """
+    # CRITICAL: Fetch fresh role directly here, not from middleware
+    # This ensures role changes take effect immediately
+    from ..database import get_supabase_admin_client
+    
+    role = current_user.role  # Fallback
+    user_id = str(current_user.user_id)
+    
     try:
-        supabase = get_supabase_client()
+        admin_client = get_supabase_admin_client()
+        admin_user = admin_client.auth.admin.get_user_by_id(user_id)
         
-        # Get fresh user data from Supabase
-        user_response = supabase.auth.get_user()
-        
-        if not user_response or not user_response.user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found"
-            )
-        
-        user = user_response.user
-        user_metadata = user.user_metadata or {}
-        app_metadata = user.app_metadata or {}
-        
-        role = app_metadata.get("role") or user_metadata.get("role") or current_user.role
-        
-        return UserProfileResponse(
-            id=UUID(user.id),
-            email=user.email,
-            role=role,
-            full_name=user_metadata.get("full_name") or user_metadata.get("name") or current_user.full_name,
-            avatar_url=user_metadata.get("avatar_url") or user_metadata.get("picture"),
-            created_at=user.created_at
-        )
-        
-    except HTTPException:
-        raise
+        if admin_user and admin_user.user:
+            fresh_metadata = admin_user.user.app_metadata or {}
+            role = fresh_metadata.get("role") or current_user.role or "mentor"
+            print(f"[/api/auth/me] Fresh role for {current_user.email}: {role} (metadata: {fresh_metadata})")
+        else:
+            print(f"[/api/auth/me] No admin user data for {user_id}")
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch profile: {str(e)}"
-        )
+        print(f"[/api/auth/me] Admin API error: {e}")
+        # Keep the role from current_user as fallback
+    
+    return UserProfileResponse(
+        id=current_user.user_id,
+        email=current_user.email,
+        role=role,
+        full_name=current_user.full_name,
+        avatar_url=None,
+        created_at=None
+    )
 
 
 @router.put("/me", response_model=UserProfileResponse)

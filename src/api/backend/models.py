@@ -288,3 +288,22 @@ class BatchWithStats(Batch):
     completed_projects: int = 0
     pending_projects: int = 0
     at_risk_teams: int = 0
+
+
+class PaginatedResponse(BaseModel):
+    """Generic paginated response"""
+    items: List[Any]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class TeamList(BaseModel):
+    """List of teams with pagination"""
+    teams: List[Team]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+

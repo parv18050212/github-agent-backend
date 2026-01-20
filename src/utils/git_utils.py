@@ -74,8 +74,33 @@ import subprocess
 def clone_repo(url: str, ref: str = "HEAD", depth: int = None) -> str:
     """
     Shallow clone repository to a temp folder. Return path.
+    Sanitizes GitHub URLs that include /tree/ or /blob/ references.
     """
-    tempdir = tempfile.mkdtemp(prefix="repo_audit_")
+    # Sanitize GitHub URLs that include branch/tree references
+    # Example: https://github.com/user/repo/tree/main -> https://github.com/user/repo
+    import re
+    url = url.strip()
+    
+    # Remove /tree/*, /blob/*, or /commit/* from GitHub URLs
+    if "github.com" in url:
+        url = re.sub(r'/(tree|blob|commit)/[^/\s]+.*$', '', url)
+        # Also remove trailing slashes
+        url = url.rstrip('/')
+    
+    # Use persistent directory for caching clones during development
+    # Extract repo name from URL for cache key
+    repo_name = url.rstrip('/').split('/')[-1].replace('.git', '')
+    cache_dir = os.path.join("repo_cache", repo_name)
+    
+    # Check if already cloned
+    if os.path.exists(cache_dir) and os.path.exists(os.path.join(cache_dir, '.git')):
+        print(f"      ♻️  Using cached clone: {cache_dir}")
+        return cache_dir
+    
+    # Create cache directory
+    os.makedirs(cache_dir, exist_ok=True)
+    tempdir = cache_dir
+    
     try:
         # Pass depth only if it is explicitly set (not None)
         if depth:

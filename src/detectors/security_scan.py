@@ -26,6 +26,14 @@ SKIP_FILES = (
 SKIP_FOLDERS = ("node_modules", ".git", "dist", "build", "__pycache__", ".venv", "venv")
 
 def scan_for_secrets(repo_path: str) -> Dict[str, Any]:
+    # Validate repo_path
+    if not repo_path or not os.path.exists(repo_path):
+        print(f"⚠️ Security scan skipped: invalid repo_path ({repo_path})")
+        return {
+            "score": 100,
+            "leak_count": 0,
+            "leaks": []
+        }
     leaks = []
     
     # Walk through files

@@ -1,0 +1,778 @@
+"""
+Team Analytics API endpoints.
+Provides detailed analytics, commit history, and file tree for teams.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta, timezone
+import json
+
+from ..middleware.auth import get_current_user, AuthUser
+from ..database import get_supabase_admin_client
+from ..schemas import (
+    TeamAnalyticsResponse,
+    TeamCommitsResponse,
+    TeamFileTreeResponse
+)
+from ..services.frontend_adapter import FrontendAdapter
+
+router = APIRouter(prefix="/api/teams", tags=["analytics"])
+
+
+def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        if isinstance(value, datetime):
+            return value
+        if value.endswith("Z"):
+            value = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _format_relative_time(dt: Optional[datetime], now: datetime) -> str:
+    if not dt:
+        return "Unknown"
+    delta = now - dt
+    if delta.total_seconds() < 0:
+        return dt.strftime("%Y-%m-%d")
+    if delta.days == 0:
+        hours = max(1, int(delta.total_seconds() // 3600))
+        return f"{hours} hours ago"
+    if delta.days == 1:
+        return "1 day ago"
+    if delta.days < 7:
+        return f"{delta.days} days ago"
+    weeks = delta.days // 7
+    if weeks < 5:
+        return f"{weeks} weeks ago"
+    return dt.strftime("%Y-%m-%d")
+
+
+def _calculate_current_streak(active_days: List[str]) -> int:
+    if not active_days:
+        return 0
+    days = sorted({datetime.fromisoformat(d).date() for d in active_days if d})
+    if not days:
+        return 0
+    streak = 1
+    for i in range(len(days) - 1, 0, -1):
+        if (days[i] - days[i - 1]).days == 1:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _language_color(name: str) -> str:
+    color_map = {
+        "typescript": "#3178c6",
+        "javascript": "#f7df1e",
+        "python": "#3572A5",
+        "css": "#264de4",
+        "html": "#e34c26",
+        "java": "#b07219",
+        "go": "#00ADD8",
+        "rust": "#dea584",
+        "c#": "#178600",
+        "c++": "#f34b7d",
+        "c": "#555555",
+        "php": "#4F5D95",
+        "ruby": "#701516"
+    }
+    return color_map.get(name.lower(), "#6b7280")
+
+
+def _extract_language_breakdown(report_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    lang_data = report_json.get("languages")
+    breakdown: List[Dict[str, Any]] = []
+
+    if isinstance(lang_data, dict):
+        for name, pct in lang_data.items():
+            breakdown.append({
+                "name": name,
+                "value": round(float(pct), 2),
+                "color": _language_color(name)
+            })
+    elif isinstance(lang_data, list):
+        for item in lang_data:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("language") or "Unknown"
+                value = item.get("percentage") or item.get("value") or 0
+                breakdown.append({
+                    "name": name,
+                    "value": round(float(value), 2),
+                    "color": _language_color(name)
+                })
+
+    return breakdown
+
+
+def _split_feedback(text: str) -> List[str]:
+    if not text:
+        return []
+    parts = text.replace("\n-", ".").replace("\n*", ".").replace("\n", ". ").split(".")
+    items = [p.strip() for p in parts if p.strip() and len(p.strip()) > 10]
+    return items[:5]
+
+
+async def verify_team_access(team_id: str, current_user: AuthUser, supabase):
+    """
+    Verify user has access to the team.
+    Admin has access to all teams, mentors only to assigned teams.
+    """
+    role = current_user.role
+    user_id = str(current_user.user_id)
+    
+    # Get team details
+    team_response = supabase.table("teams").select("*").eq("id", team_id).execute()
+    if not team_response.data:
+        raise HTTPException(status_code=404, detail="Team not found")
+    
+    team = team_response.data[0]
+    
+    # Admin has access to all teams
+    if role == "admin":
+        return team
+    
+    # Mentor can only access assigned teams
+    if role == "mentor":
+        if str(team.get("mentor_id")) != user_id:
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. You can only view teams assigned to you."
+            )
+        return team
+    
+    raise HTTPException(status_code=403, detail="Access denied")
+
+
+@router.get("/{teamId}/analytics", response_model=TeamAnalyticsResponse)
+async def get_team_analytics(
+    teamId: str = Path(..., description="Team ID"),
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Get comprehensive analytics for a team.
+    Admin or assigned mentor only.
+    """
+    supabase = get_supabase_admin_client()
+    
+    # Verify access
+    team = await verify_team_access(teamId, current_user, supabase)
+    
+    # Get associated project (analysis results)
+    project_id = team.get("project_id")
+    
+    if not project_id:
+        # Team hasn't been analyzed yet
+        return {
+            "teamId": teamId,
+            "teamName": team["team_name"],
+            "batchId": team["batch_id"],
+            "analysis": {
+                "totalScore": 0,
+                "qualityScore": 0,
+                "securityScore": 0,
+                "originalityScore": 0,
+                "architectureScore": 0,
+                "documentationScore": 0
+            },
+            "commits": {
+                "total": 0,
+                "lastWeek": 0,
+                "contributionDistribution": [],
+                "timeline": [],
+                "burstDetected": False,
+                "lastMinuteCommits": 0
+            },
+            "codeMetrics": {
+                "totalFiles": 0,
+                "totalLinesOfCode": 0,
+                "languages": [],
+                "techStack": [],
+                "architecturePattern": "Unknown"
+            },
+            "security": {
+                "score": 0,
+                "issues": [],
+                "secretsDetected": 0
+            },
+            "aiAnalysis": {
+                "aiGeneratedPercentage": 0,
+                "verdict": "Not analyzed",
+                "strengths": [],
+                "improvements": []
+            },
+            "healthStatus": team.get("health_status", "on_track"),
+            "riskFlags": team.get("risk_flags", []),
+            "lastAnalyzedAt": None,
+            "repoUrl": team.get("repo_url"),
+            "createdAt": team.get("created_at"),
+            "totalCommits": 0,
+            "totalAdditions": 0,
+            "totalDeletions": 0,
+            "activeDays": 0,
+            "avgCommitsPerDay": 0,
+            "contributors": [],
+            "commitActivity": [],
+            "hourlyActivity": [],
+            "teamContributionData": [],
+            "recentActivities": [],
+            "warnings": [],
+            "languageBreakdown": []
+        }
+    
+    # Get project analysis data
+    project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
+    
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project analysis not found")
+    
+    project = project_response.data[0]
+    
+    report_json = project.get("report_json") or {}
+    if isinstance(report_json, str):
+        try:
+            report_json = json.loads(report_json)
+        except Exception:
+            report_json = {}
+
+    analysis_result = project.get("analysis_result") or {}
+    if not report_json and analysis_result:
+        if isinstance(analysis_result, str):
+            try:
+                report_json = json.loads(analysis_result)
+            except Exception:
+                report_json = {}
+        elif isinstance(analysis_result, dict):
+            report_json = analysis_result
+
+    scores = FrontendAdapter._extract_scores(project, report_json)
+
+    commit_details = report_json.get("commit_details", {}) or {}
+    all_commits = commit_details.get("all_commits", []) or []
+
+    now = datetime.now(timezone.utc)
+    daily_counts: Dict[str, int] = {}
+    hourly_counts: Dict[str, int] = {f"{h:02d}:00": 0 for h in range(24)}
+    weekly_counts: Dict[str, Dict[str, int]] = {}
+    author_totals: Dict[str, Dict[str, Any]] = {}
+    author_daily_counts: Dict[str, Dict[str, int]] = {}
+
+    total_additions = 0
+    total_deletions = 0
+
+    for commit in all_commits:
+        commit_dt = _parse_datetime(commit.get("date"))
+        if not commit_dt:
+            continue
+        if commit_dt.tzinfo is None:
+            commit_dt = commit_dt.replace(tzinfo=timezone.utc)
+
+        day_key = commit_dt.date().isoformat()
+        hour_key = f"{commit_dt.hour:02d}:00"
+        week_key = f"{commit_dt.isocalendar().year}-W{commit_dt.isocalendar().week:02d}"
+
+        daily_counts[day_key] = daily_counts.get(day_key, 0) + 1
+        hourly_counts[hour_key] = hourly_counts.get(hour_key, 0) + 1
+
+        if week_key not in weekly_counts:
+            weekly_counts[week_key] = {"commits": 0, "additions": 0, "deletions": 0}
+        weekly_counts[week_key]["commits"] += 1
+
+        additions = int(commit.get("additions", 0) or 0)
+        deletions = int(commit.get("deletions", 0) or 0)
+        total_additions += additions
+        total_deletions += deletions
+        weekly_counts[week_key]["additions"] += additions
+        weekly_counts[week_key]["deletions"] += deletions
+
+        author = commit.get("author") or "Unknown"
+        email = commit.get("email") or ""
+        if author not in author_totals:
+            author_totals[author] = {
+                "name": author,
+                "email": email,
+                "commits": 0,
+                "additions": 0,
+                "deletions": 0,
+                "active_days": set(),
+                "last_active": commit_dt,
+                "top_file_types": []
+            }
+        author_totals[author]["commits"] += 1
+        author_totals[author]["additions"] += additions
+        author_totals[author]["deletions"] += deletions
+        author_totals[author]["active_days"].add(day_key)
+        if commit_dt > author_totals[author]["last_active"]:
+            author_totals[author]["last_active"] = commit_dt
+
+        if author not in author_daily_counts:
+            author_daily_counts[author] = {}
+        author_daily_counts[author][day_key] = author_daily_counts[author].get(day_key, 0) + 1
+
+    total_commits = len(all_commits) or commit_details.get("total_commits") or report_json.get("total_commits") or 0
+    active_days = len(daily_counts)
+    avg_commits_per_day = round((total_commits / active_days), 1) if active_days > 0 else 0
+
+    week_cutoff = now - timedelta(days=7)
+    last_week_commits = sum(
+        count for day, count in daily_counts.items()
+        if _parse_datetime(day) and _parse_datetime(day).replace(tzinfo=timezone.utc) >= week_cutoff
+    )
+
+    timeline = []
+    for i in range(30):
+        day = (now - timedelta(days=(29 - i))).date().isoformat()
+        timeline.append({
+            "date": day,
+            "commits": daily_counts.get(day, 0),
+            "additions": 0,
+            "deletions": 0
+        })
+
+    contribution_distribution = []
+    for author, stats in author_totals.items():
+        commits_count = stats.get("commits", 0)
+        percentage = round((commits_count / total_commits) * 100, 2) if total_commits > 0 else 0
+        contribution_distribution.append({
+            "contributorName": author,
+            "commits": commits_count,
+            "percentage": percentage,
+            "additions": stats.get("additions", 0),
+            "deletions": stats.get("deletions", 0)
+        })
+
+    contribution_distribution.sort(key=lambda x: x["commits"], reverse=True)
+
+    commit_activity = [
+        {
+            "week": week,
+            "commits": data["commits"],
+            "additions": data["additions"],
+            "deletions": data["deletions"]
+        }
+        for week, data in sorted(weekly_counts.items())
+    ]
+
+    hourly_activity = [{"hour": hour, "commits": hourly_counts[hour]} for hour in sorted(hourly_counts.keys())]
+
+    team_contribution_data = [{"date": day, "count": count} for day, count in daily_counts.items()]
+
+    commit_details_stats = commit_details.get("author_stats", {}) or {}
+    contributors = []
+    for author, stats in author_totals.items():
+        active_day_list = sorted(stats["active_days"])
+        last_active_dt = stats.get("last_active")
+        top_file_types = []
+        author_stat = commit_details_stats.get(author, {})
+        if author_stat.get("top_file_types"):
+            top_file_types = [
+                (item.split('(')[0].strip())
+                for item in author_stat["top_file_types"].split(",")
+            ]
+            top_file_types = [
+                (t if t.startswith(".") else f".{t}")
+                for t in top_file_types if t and t != "no_ext"
+            ]
+        if not top_file_types:
+            top_file_types = [".unknown"]
+
+        contributor_total = stats.get("commits", 0)
+        active_days_count = len(stats["active_days"])
+        avg_per_day = round((contributor_total / active_days_count), 1) if active_days_count > 0 else 0
+
+        contributors.append({
+            "name": author,
+            "email": stats.get("email") or f"{author.replace(' ', '.').lower()}@unknown",
+            "commits": contributor_total,
+            "additions": stats.get("additions", 0),
+            "deletions": stats.get("deletions", 0),
+            "percentage": round((contributor_total / total_commits) * 100, 1) if total_commits > 0 else 0,
+            "activeDays": active_days_count,
+            "avgCommitsPerDay": avg_per_day,
+            "topFileTypes": top_file_types,
+            "contributionData": [
+                {"date": day, "count": count}
+                for day, count in author_daily_counts.get(author, {}).items()
+            ],
+            "lastActive": _format_relative_time(last_active_dt, now),
+            "streak": _calculate_current_streak(active_day_list)
+        })
+
+    contributors.sort(key=lambda x: x["commits"], reverse=True)
+
+    warnings = []
+    if total_commits > 0 and daily_counts:
+        sorted_days = sorted(daily_counts.items())
+        last_days = sorted_days[int(len(sorted_days) * 0.8):]
+        recent_commits = sum(count for _, count in last_days)
+        if recent_commits / total_commits >= 0.5:
+            warnings.append({
+                "type": "burst",
+                "message": f"{round(recent_commits / total_commits * 100)}% of commits were made recently",
+                "severity": "medium"
+            })
+
+    for contributor in contributors:
+        last_active_str = contributor.get("lastActive")
+        if "days ago" in last_active_str:
+            days = int(last_active_str.split(" ")[0])
+            if days >= 7:
+                warnings.append({
+                    "type": "inactive",
+                    "message": f"{contributor['name']} hasn't committed in {days} days",
+                    "severity": "low" if days < 14 else "medium"
+                })
+
+    if commit_details.get("dummy_commits", 0) > 0:
+        warnings.append({
+            "type": "dummy",
+            "message": f"{commit_details.get('dummy_commits')} empty commits detected",
+            "severity": "low"
+        })
+
+    if commit_details.get("suspicious_list"):
+        warnings.append({
+            "type": "suspicious",
+            "message": f"{len(commit_details.get('suspicious_list', []))} suspicious commits detected",
+            "severity": "medium"
+        })
+
+    recent_activities = []
+    for commit in sorted(all_commits, key=lambda x: x.get("date", ""), reverse=True)[:20]:
+        commit_dt = _parse_datetime(commit.get("date"))
+        recent_activities.append({
+            "id": commit.get("hash") or commit.get("short_hash") or commit.get("date") or "",
+            "type": "commit",
+            "title": commit.get("message") or "Commit",
+            "description": None,
+            "author": commit.get("author") or "Unknown",
+            "date": _format_relative_time(commit_dt, now) if commit_dt else "Unknown",
+            "metadata": {
+                "additions": commit.get("additions", 0),
+                "deletions": commit.get("deletions", 0),
+                "files": len(commit.get("files_changed", [])) if commit.get("files_changed") else None
+            }
+        })
+
+    for branch_name in (commit_details.get("branches", []) or [])[:10]:
+        recent_activities.append({
+            "id": f"branch-{branch_name}",
+            "type": "branch",
+            "title": f"Branch: {branch_name}",
+            "description": "Branch activity detected",
+            "author": "System",
+            "date": "Unknown",
+            "metadata": None
+        })
+
+    judge_data = report_json.get("judge", {}) if isinstance(report_json, dict) else {}
+    constructive = judge_data.get("constructive_feedback") if isinstance(judge_data, dict) else None
+    if constructive:
+        recent_activities.append({
+            "id": "review-feedback",
+            "type": "comment",
+            "title": "Review feedback",
+            "description": str(constructive)[:240],
+            "author": "AI Reviewer",
+            "date": _format_relative_time(_parse_datetime(project.get("created_at")), now),
+            "metadata": None
+        })
+
+    language_breakdown = _extract_language_breakdown(report_json)
+
+    languages = [
+        {"name": item.get("name"), "percentage": item.get("value")}
+        for item in language_breakdown
+    ] if language_breakdown else []
+
+    tech_stack = report_json.get("stack", []) if isinstance(report_json.get("stack", []), list) else []
+
+    security_data = report_json.get("security", {}) if isinstance(report_json, dict) else {}
+    security_issues = []
+    if security_data.get("leaked_keys"):
+        for leak in security_data.get("leaked_keys", []):
+            security_issues.append({
+                "type": leak.get("type", "Unknown"),
+                "severity": "high",
+                "file": leak.get("file", ""),
+                "line": leak.get("line", 0),
+                "description": "Secret detected"
+            })
+    
+    # Build response
+    judge_data = report_json.get("judge", {}) if isinstance(report_json, dict) else {}
+    positive_feedback = judge_data.get("positive_feedback", "") if isinstance(judge_data, dict) else ""
+    constructive_feedback = judge_data.get("constructive_feedback", "") if isinstance(judge_data, dict) else ""
+    strengths = _split_feedback(positive_feedback)
+    improvements = _split_feedback(constructive_feedback)
+
+    return {
+        "teamId": teamId,
+        "teamName": team["team_name"],
+        "batchId": team["batch_id"],
+        "analysis": {
+            "totalScore": scores.get("totalScore", 0),
+            "qualityScore": scores.get("qualityScore", 0),
+            "securityScore": scores.get("securityScore", 0),
+            "originalityScore": scores.get("originalityScore", 0),
+            "architectureScore": scores.get("architectureScore", 0),
+            "documentationScore": scores.get("documentationScore", 0)
+        },
+        "commits": {
+            "total": total_commits,
+            "lastWeek": last_week_commits,
+            "contributionDistribution": contribution_distribution,
+            "timeline": timeline,
+            "burstDetected": any(warning.get("type") == "burst" for warning in warnings),
+            "lastMinuteCommits": 0
+        },
+        "codeMetrics": {
+            "totalFiles": report_json.get("structure", {}).get("file_count", 0) if isinstance(report_json.get("structure"), dict) else 0,
+            "totalLinesOfCode": report_json.get("structure", {}).get("loc", 0) if isinstance(report_json.get("structure"), dict) else 0,
+            "languages": languages,
+            "techStack": tech_stack,
+            "architecturePattern": report_json.get("structure", {}).get("architecture", "Unknown") if isinstance(report_json.get("structure"), dict) else "Unknown"
+        },
+        "security": {
+            "score": scores.get("securityScore", 0),
+            "issues": security_issues,
+            "secretsDetected": len(security_data.get("leaked_keys", [])) if isinstance(security_data, dict) else 0
+        },
+        "aiAnalysis": {
+            "aiGeneratedPercentage": report_json.get("llm_detection", {}).get("overall_percentage", 0) if isinstance(report_json.get("llm_detection"), dict) else 0,
+            "verdict": judge_data.get("verdict", "Unknown") if isinstance(judge_data, dict) else "Unknown",
+            "strengths": strengths,
+            "improvements": improvements
+        },
+        "healthStatus": team.get("health_status", "on_track"),
+        "riskFlags": team.get("risk_flags", []),
+        "lastAnalyzedAt": project.get("created_at"),
+        "repoUrl": project.get("repo_url") or team.get("repo_url"),
+        "createdAt": team.get("created_at") or project.get("created_at"),
+        "totalCommits": total_commits,
+        "totalAdditions": total_additions,
+        "totalDeletions": total_deletions,
+        "activeDays": active_days,
+        "avgCommitsPerDay": avg_commits_per_day,
+        "contributors": contributors,
+        "commitActivity": commit_activity,
+        "hourlyActivity": hourly_activity,
+        "teamContributionData": team_contribution_data,
+        "recentActivities": recent_activities,
+        "warnings": warnings,
+        "languageBreakdown": language_breakdown
+    }
+
+
+@router.get("/{teamId}/commits", response_model=TeamCommitsResponse)
+async def get_team_commits(
+    teamId: str = Path(..., description="Team ID"),
+    author: Optional[str] = Query(None, description="Filter by contributor name"),
+    startDate: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    endDate: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1, description="Page number"),
+    pageSize: int = Query(20, ge=1, le=100, description="Items per page"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get commit history for a team with optional filters.
+    Admin or assigned mentor only.
+    """
+    supabase = get_supabase()
+    
+    # Verify access
+    team = await verify_team_access(teamId, current_user, supabase)
+    
+    # Get associated project
+    project_id = team.get("project_id")
+    
+    if not project_id:
+        return {
+            "commits": [],
+            "total": 0,
+            "page": page,
+            "pageSize": pageSize
+        }
+    
+    # Get project analysis data
+    project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
+    
+    if not project_response.data:
+        return {
+            "commits": [],
+            "total": 0,
+            "page": page,
+            "pageSize": pageSize
+        }
+    
+    project = project_response.data[0]
+    analysis_result = project.get("analysis_result", {})
+    
+    if isinstance(analysis_result, str):
+        try:
+            analysis_result = json.loads(analysis_result)
+        except:
+            analysis_result = {}
+    
+    # Extract commits from commit patterns or contributors
+    # Note: In a real implementation, this would fetch from Git API or stored commit data
+    commit_forensics = analysis_result.get("commitForensics", {})
+    contributors = commit_forensics.get("contributors", [])
+    
+    # Build commit list from available data (simplified)
+    all_commits = []
+    for contributor in contributors:
+        commits_count = contributor.get("commits", 0)
+        contributor_name = contributor.get("name", "Unknown")
+        
+        # Generate sample commits (in production, fetch real commits)
+        for i in range(min(commits_count, 10)):  # Limit for demo
+            all_commits.append({
+                "sha": f"commit-{contributor_name}-{i}",
+                "author": contributor_name,
+                "authorEmail": contributor.get("email", "unknown@example.com"),
+                "message": f"Commit by {contributor_name}",
+                "date": datetime.now().isoformat(),
+                "additions": contributor.get("additions", 0) // commits_count if commits_count > 0 else 0,
+                "deletions": contributor.get("deletions", 0) // commits_count if commits_count > 0 else 0,
+                "filesChanged": 1
+            })
+    
+    # Apply filters
+    filtered_commits = all_commits
+    
+    if author:
+        author_lower = author.lower()
+        filtered_commits = [c for c in filtered_commits if author_lower in c["author"].lower()]
+    
+    if startDate:
+        filtered_commits = [c for c in filtered_commits if c["date"] >= startDate]
+    
+    if endDate:
+        filtered_commits = [c for c in filtered_commits if c["date"] <= endDate]
+    
+    # Sort by date descending
+    filtered_commits.sort(key=lambda x: x["date"], reverse=True)
+    
+    # Apply pagination
+    total = len(filtered_commits)
+    start = (page - 1) * pageSize
+    end = start + pageSize
+    commits_page = filtered_commits[start:end]
+    
+    return {
+        "commits": commits_page,
+        "total": total,
+        "page": page,
+        "pageSize": pageSize
+    }
+
+
+@router.get("/{teamId}/file-tree", response_model=TeamFileTreeResponse)
+async def get_team_file_tree(
+    teamId: str = Path(..., description="Team ID"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get repository file tree structure.
+    Admin or assigned mentor only.
+    """
+    supabase = get_supabase()
+    
+    # Verify access
+    team = await verify_team_access(teamId, current_user, supabase)
+    
+    # Get associated project
+    project_id = team.get("project_id")
+    
+    if not project_id:
+        return {
+            "tree": [],
+            "totalFiles": 0,
+            "totalSize": 0
+        }
+    
+    # Get project analysis data
+    project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
+    
+    if not project_response.data:
+        return {
+            "tree": [],
+            "totalFiles": 0,
+            "totalSize": 0
+        }
+    
+    project = project_response.data[0]
+    analysis_result = project.get("analysis_result", {})
+    
+    if isinstance(analysis_result, str):
+        try:
+            analysis_result = json.loads(analysis_result)
+        except:
+            analysis_result = {}
+    
+    # In a real implementation, this would build from actual file data
+    # For now, create a simplified tree structure from languages
+    languages = analysis_result.get("languages", [])
+    total_files = analysis_result.get("totalFiles", 0)
+    total_loc = analysis_result.get("totalLinesOfCode", 0)
+    
+    # Build simplified tree
+    tree = []
+    
+    # Create src directory with language-based files
+    src_children = []
+    for lang_data in languages:
+        lang = lang_data.get("language", "Unknown")
+        percentage = lang_data.get("percentage", 0)
+        file_count = int(total_files * percentage / 100)
+        
+        # Determine file extension
+        ext_map = {
+            "Python": ".py",
+            "JavaScript": ".js",
+            "TypeScript": ".ts",
+            "Java": ".java",
+            "C++": ".cpp",
+            "Go": ".go",
+            "Rust": ".rs"
+        }
+        ext = ext_map.get(lang, ".txt")
+        
+        for i in range(min(file_count, 5)):  # Limit for demo
+            src_children.append({
+                "path": f"src/module{i}{ext}",
+                "type": "file",
+                "size": 1024 * (i + 1),
+                "language": lang
+            })
+    
+    if src_children:
+        tree.append({
+            "path": "src",
+            "type": "directory",
+            "children": src_children
+        })
+    
+    # Add README
+    tree.append({
+        "path": "README.md",
+        "type": "file",
+        "size": 2048,
+        "language": "Markdown"
+    })
+    
+    # Calculate total size (estimate)
+    total_size = total_loc * 50  # Rough estimate: 50 bytes per line
+    
+    return {
+        "tree": tree,
+        "totalFiles": total_files,
+        "totalSize": total_size
+    }

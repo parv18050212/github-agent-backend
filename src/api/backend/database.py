@@ -45,3 +45,9 @@ def get_supabase_admin_client() -> Client:
 
 # Convenience alias
 supabase = get_supabase_client
+
+
+def get_supabase() -> Client:
+    """Alias for get_supabase_client"""
+    return get_supabase_client()
+

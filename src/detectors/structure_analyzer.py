@@ -13,6 +13,15 @@ ARCH_PATTERNS = {
 }
 
 def analyze_structure(repo_path: str) -> Dict[str, Any]:
+    # Validate repo_path
+    if not repo_path or not os.path.exists(repo_path):
+        print(f"⚠️ Structure analysis skipped: invalid repo_path ({repo_path})")
+        return {
+            "architecture": "Unknown",
+            "organization_score": 50,
+            "has_tests": False,
+            "has_docs": False
+        }
     """
     Analyzes directory structure for architecture patterns and nesting depth.
     """

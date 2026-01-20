@@ -2,7 +2,7 @@
 Analysis Router
 Endpoints for triggering and monitoring repository analysis
 """
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from uuid import UUID
 from typing import Dict, Any
 
@@ -18,8 +18,16 @@ from src.api.backend.schemas import (
     ErrorResponse
 )
 from src.api.backend.crud import ProjectCRUD, AnalysisJobCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
-from src.api.backend.background import run_analysis_job
 from src.api.backend.utils.cache import cache, RedisCache
+
+# Import Celery tasks
+try:
+    from celery_worker import analyze_repository_task
+    CELERY_ENABLED = True
+except ImportError:
+    CELERY_ENABLED = False
+    # Fallback to old background tasks
+    from src.api.backend.background import run_analysis_job
 
 router = APIRouter(prefix="/api", tags=["Analysis"])
 
@@ -33,7 +41,7 @@ router = APIRouter(prefix="/api", tags=["Analysis"])
         409: {"model": ErrorResponse}
     }
 )
-async def analyze_repo(request: AnalyzeRepoRequest, background_tasks: BackgroundTasks):
+async def analyze_repo(request: AnalyzeRepoRequest):
     """
     Trigger repository analysis
     
@@ -66,14 +74,43 @@ async def analyze_repo(request: AnalyzeRepoRequest, background_tasks: Background
         job = AnalysisJobCRUD.create_job(project_id)
         job_id = UUID(job["id"])
         
-        # Queue background task
-        background_tasks.add_task(
-            run_analysis_job,
-            project_id=str(project_id),
-            job_id=str(job_id),
-            repo_url=request.repo_url,
-            team_name=request.team_name
-        )
+        # Queue Celery task (or fallback to BackgroundTasks)
+        celery_queued = False
+        if CELERY_ENABLED:
+            try:
+                task = analyze_repository_task.delay(
+                    project_id=str(project_id),
+                    job_id=str(job_id),
+                    repo_url=request.repo_url,
+                    team_name=request.team_name
+                )
+                # Store Celery task ID
+                from src.api.backend.database import get_supabase_admin_client
+                supabase = get_supabase_admin_client()
+                supabase.table('analysis_jobs').update({
+                    'metadata': {'celery_task_id': task.id}
+                }).eq('id', str(job_id)).execute()
+                celery_queued = True
+            except Exception as celery_error:
+                print(f"⚠ Celery queueing failed: {celery_error}")
+                print("  Falling back to in-process background tasks...")
+        
+        # Fallback to old method if Celery failed
+        if not celery_queued:
+            try:
+                from src.api.backend.background import run_analysis_job
+                import asyncio
+                asyncio.create_task(run_analysis_job(
+                    project_id=str(project_id),
+                    job_id=str(job_id),
+                    repo_url=request.repo_url,
+                    team_name=request.team_name
+                ))
+            except ImportError:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Analysis service temporarily unavailable"
+                )
         
         return AnalyzeRepoResponse(
             job_id=job_id,

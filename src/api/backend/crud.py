@@ -4,7 +4,8 @@ CRUD Operations for Supabase Database
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 from datetime import datetime
-from src.api.backend.database import get_supabase_client
+from src.api.backend.database import get_supabase_client, get_supabase_admin_client
+from src.api.backend.utils.role_manager import RoleManager
 from postgrest.exceptions import APIError
 
 
@@ -485,33 +486,86 @@ class UserCRUD:
 
     @staticmethod
     def get_user(user_id: str) -> Optional[Dict[str, Any]]:
-        supabase = get_supabase_client()
+        # Use admin client to bypass RLS policies
+        supabase = get_supabase_admin_client()
         result = supabase.table("users").select("*").eq("id", user_id).execute()
         return result.data[0] if result.data else None
 
     @staticmethod
     def get_or_create_user(user_id: str, email: Optional[str] = None, full_name: Optional[str] = None) -> Dict[str, Any]:
-        supabase = get_supabase_client()
+        """
+        Get or create user with intelligent role assignment.
+        
+        Role determination priority:
+        1. Supabase Auth metadata (app_metadata or user_metadata)
+        2. First user in system becomes admin
+        3. Admin email whitelist (ADMIN_EMAILS env var)
+        4. Default to 'mentor'
+        
+        Note: Domain-based auto-admin removed to prevent accidentally making
+        all college/university users admins when mentors also use those domains.
+        """
+        # Use admin client to bypass RLS policies
+        supabase = get_supabase_admin_client()
 
         existing = UserCRUD.get_user(user_id)
         if existing:
             return existing
 
+        # Check if this is the first user in the system
+        is_first_user = False
+        try:
+            user_count_response = supabase.table("users").select("id", count="exact").execute()
+            user_count = user_count_response.count if hasattr(user_count_response, 'count') else len(user_count_response.data or [])
+            is_first_user = (user_count == 0)
+            if is_first_user:
+                print(f"[UserCRUD] First user detected! Will assign admin role.")
+        except Exception as e:
+            print(f"[UserCRUD] Could not check user count: {e}")
+
+        # Fetch auth metadata from Supabase Auth
+        auth_metadata = {}
+        try:
+            user_response = supabase.auth.admin.get_user_by_id(user_id)
+            if user_response and user_response.user:
+                # Combine app_metadata and user_metadata
+                app_metadata = user_response.user.app_metadata or {}
+                user_metadata = user_response.user.user_metadata or {}
+                
+                # Priority: app_metadata.role > user_metadata.role
+                if "role" in app_metadata:
+                    auth_metadata["role"] = app_metadata["role"]
+                elif "role" in user_metadata:
+                    auth_metadata["role"] = user_metadata["role"]
+                
+                print(f"[UserCRUD] Auth metadata fetched: {auth_metadata}")
+        except Exception as e:
+            print(f"[UserCRUD] Could not fetch auth metadata: {e}")
+
+        # Use RoleManager to intelligently determine role
+        assigned_role = RoleManager.determine_role(
+            email=email,
+            auth_metadata=auth_metadata,
+            is_first_user=is_first_user
+        )
+
         payload = {
             "id": user_id,
             "email": email,
             "full_name": full_name,
-            "role": "student",
+            "role": assigned_role,
             "is_active": True,
             "created_at": datetime.now().isoformat()
         }
 
+        print(f"[UserCRUD] Creating user {email} with role: {assigned_role}")
         result = supabase.table("users").insert(payload).execute()
         return result.data[0] if result.data else payload
 
     @staticmethod
     def set_role(user_id: str, role: str) -> Dict[str, Any]:
-        supabase = get_supabase_client()
+        # Use admin client to bypass RLS policies
+        supabase = get_supabase_admin_client()
         result = supabase.table("users").update({"role": role}).eq("id", user_id).execute()
         return result.data[0] if result.data else None
 

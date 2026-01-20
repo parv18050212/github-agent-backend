@@ -14,6 +14,18 @@ def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
             "score": 0,
             "feedback": "Skipped"
         }
+    
+    if not repo_path or not os.path.exists(repo_path):
+        print(f"⚠️ Product evaluation skipped: invalid repo_path ({repo_path})")
+        return {
+            "project_name": "Unknown",
+            "description": "Repository path not available.",
+            "features": [],
+            "implementation_score": 50,
+            "positive_feedback": "Unable to analyze - repository not cloned",
+            "constructive_feedback": "Repository cloning failed",
+            "verdict": "Analysis Incomplete"
+        }
 
     print("      🧠 Generating Codebase Summary for Gemini 2.5...")
     context = generate_repo_summary(repo_path)
