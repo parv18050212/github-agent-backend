@@ -195,7 +195,7 @@ class DataMapper:
                 "ai_pros": str(ai_pros)[:5000] if ai_pros else None,
                 "ai_cons": str(ai_cons)[:5000] if ai_cons else None,
                 "status": "completed",
-                "analyzed_at": datetime.now().isoformat()
+                "last_analyzed_at": datetime.now().isoformat()  # Track when analysis completed
             }
             
             # Try to add report_json (may fail if too large or invalid)

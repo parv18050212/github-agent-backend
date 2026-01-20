@@ -2,9 +2,11 @@
 Analysis Router
 Endpoints for triggering and monitoring repository analysis
 """
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from uuid import UUID
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
+import os
 
 from src.api.backend.schemas import (
     AnalyzeRepoRequest,
@@ -19,6 +21,70 @@ from src.api.backend.schemas import (
 )
 from src.api.backend.crud import ProjectCRUD, AnalysisJobCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
 from src.api.backend.utils.cache import cache, RedisCache
+
+# Re-analysis interval configuration (in days)
+# Can be overridden via environment variable REANALYSIS_INTERVAL_DAYS
+REANALYSIS_INTERVAL_DAYS = int(os.getenv("REANALYSIS_INTERVAL_DAYS", "7"))  # Default: 7 days
+
+
+def should_allow_reanalysis(project: Dict[str, Any], force: bool = False) -> tuple[bool, Optional[str]]:
+    """
+    Check if a project should be allowed to be re-analyzed.
+    
+    Returns:
+        tuple: (allowed: bool, reason: str or None)
+    """
+    if force:
+        return True, None
+    
+    status = project.get("status")
+    
+    # Allow if failed or pending
+    if status in ["failed", "pending", None]:
+        return True, None
+    
+    # Block if currently analyzing
+    if status in ["analyzing", "queued"]:
+        return False, f"Repository is currently being analyzed (status: {status})"
+    
+    # For completed projects, check the re-analysis interval
+    if status == "completed":
+        last_analyzed = project.get("last_analyzed_at")
+        
+        if not last_analyzed:
+            # Never analyzed (old data without timestamp), allow re-analysis
+            return True, None
+        
+        # Parse the timestamp
+        try:
+            if isinstance(last_analyzed, str):
+                # Handle ISO format with or without timezone
+                last_analyzed_dt = datetime.fromisoformat(last_analyzed.replace("Z", "+00:00"))
+                # Make naive for comparison if needed
+                if last_analyzed_dt.tzinfo:
+                    last_analyzed_dt = last_analyzed_dt.replace(tzinfo=None)
+            else:
+                last_analyzed_dt = last_analyzed
+            
+            days_since_analysis = (datetime.now() - last_analyzed_dt).days
+            
+            if days_since_analysis < REANALYSIS_INTERVAL_DAYS:
+                next_allowed = last_analyzed_dt + timedelta(days=REANALYSIS_INTERVAL_DAYS)
+                return False, (
+                    f"Repository was analyzed {days_since_analysis} day(s) ago. "
+                    f"Re-analysis allowed after {REANALYSIS_INTERVAL_DAYS} days "
+                    f"(next: {next_allowed.strftime('%Y-%m-%d')}). Use force=true to override."
+                )
+            
+            # Enough time has passed
+            return True, None
+            
+        except (ValueError, TypeError) as e:
+            # If we can't parse the date, allow re-analysis
+            return True, None
+    
+    # Default: allow
+    return True, None
 
 # Import Celery tasks
 try:
@@ -41,26 +107,33 @@ router = APIRouter(prefix="/api", tags=["Analysis"])
         409: {"model": ErrorResponse}
     }
 )
-async def analyze_repo(request: AnalyzeRepoRequest):
+async def analyze_repo(
+    request: AnalyzeRepoRequest,
+    force: bool = Query(False, description="Force re-analysis even if recently analyzed")
+):
     """
     Trigger repository analysis
     
     - **repo_url**: GitHub repository URL
     - **team_name**: Optional team or project name
+    - **force**: Force re-analysis even if recently analyzed (default: false)
     
-    Returns job_id to track analysis progress
+    Returns job_id to track analysis progress.
+    
+    Note: By default, repos that have been analyzed within the last {REANALYSIS_INTERVAL_DAYS} days
+    will not be re-analyzed. Use force=true to override this behavior.
     """
     try:
         # Check if repo already exists
         existing = ProjectCRUD.get_project_by_url(request.repo_url)
         if existing:
-            # Check if already analyzing or completed
-            if existing.get("status") in ["analyzing", "completed"]:
+            # Check if re-analysis should be allowed
+            allowed, reason = should_allow_reanalysis(existing, force=force)
+            if not allowed:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Repository already {existing.get('status')}"
+                    detail=reason
                 )
-            # If failed or pending, we can re-analyze
             project_id = UUID(existing["id"])
         else:
             # Create new project

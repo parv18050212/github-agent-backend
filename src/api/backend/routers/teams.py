@@ -819,14 +819,22 @@ async def get_team_progress(
 @router.post("/{team_id}/analyze", response_model=AnalysisJobResponse)
 async def analyze_team(
     team_id: UUID,
-    force: bool = Query(False, description="Force re-analysis even if already analyzed"),
+    force: bool = Query(False, description="Force re-analysis even if recently analyzed"),
     current_user: AuthUser = Depends(get_current_user)
 ):
     """
     Trigger analysis for a team's repository.
     
     Creates an analysis job and queues it for processing.
+    
+    Re-analysis is only allowed:
+    - If the project has never been analyzed
+    - If the previous analysis failed
+    - If sufficient time has passed since last analysis (configurable via REANALYSIS_INTERVAL_DAYS env var)
+    - If force=true is specified
     """
+    from src.api.backend.routers.analysis import should_allow_reanalysis, REANALYSIS_INTERVAL_DAYS
+    
     supabase = get_supabase()
     
     # Get team with project
@@ -852,15 +860,18 @@ async def analyze_team(
     if not project:
         raise HTTPException(status_code=404, detail="Team has no associated project")
     
-    project_id = project[0]["id"] if isinstance(project, list) else project["id"]
+    # Handle both array and object formats
+    project_data = project[0] if isinstance(project, list) else project
+    project_id = project_data["id"]
     
-    # Check if already analyzed
-    if not force and project.get("status") == "completed":
+    # Check if re-analysis should be allowed using the shared logic
+    allowed, reason = should_allow_reanalysis(project_data, force=force)
+    if not allowed:
         return AnalysisJobResponse(
             job_id=None,
             project_id=project_id,
-            status="already_analyzed",
-            message="Project already analyzed. Use force=true to re-analyze."
+            status="skipped",
+            message=reason
         )
     
     # Create analysis job
