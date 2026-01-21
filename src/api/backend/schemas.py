@@ -715,19 +715,35 @@ class TeamAnalyticsResponse(BaseModel):
     team_name: str
     health_status: str
     risk_flags: List[str]
-    student_contributions: List["StudentContribution"]
+    contributors: List["StudentContribution"]
     commit_timeline: List["CommitDataPoint"]
     score_breakdown: ScoreBreakdown
 
 
+class FileTypeStat(BaseModel):
+    """File type usage statistic"""
+    name: str
+    count: int
+
+
 class StudentContribution(BaseModel):
     """Student contribution data"""
-    student_id: UUID
+    student_id: Optional[UUID] = None
     name: str
-    commit_count: int
-    lines_added: int
-    lines_deleted: int
-    contribution_percentage: float
+    email: Optional[str] = None
+    commits: int = Field(alias="commit_count")
+    additions: int = Field(alias="lines_added")
+    deletions: int = Field(alias="lines_deleted")
+    percentage: float = Field(alias="contribution_percentage")
+    active_days: Optional[int] = Field(None, alias="activeDays")
+    avg_commits_per_day: Optional[float] = Field(None, alias="avgCommitsPerDay")
+    top_file_types: List[FileTypeStat] = Field(default_factory=list, alias="topFileTypes")
+    last_active: Optional[str] = Field(None, alias="lastActive")
+    streak: Optional[int] = 0
+    contribution_data: List[Dict[str, Any]] = Field(default_factory=list, alias="contributionData")
+
+    class Config:
+        allow_population_by_field_name = True
 
 
 class CommitDataPoint(BaseModel):
@@ -1163,7 +1179,7 @@ class ContributorActivity(BaseModel):
     percentage: float
     activeDays: int
     avgCommitsPerDay: float
-    topFileTypes: List[str]
+    topFileTypes: List[FileTypeStat]
     contributionData: List[HeatmapPoint]
     lastActive: str
     streak: int
@@ -1192,6 +1208,14 @@ class AIAnalysis(BaseModel):
     strengths: List[str]
     improvements: List[str]
 
+class RiskFlagItem(BaseModel):
+    """Risk flag display info"""
+    flag: str
+    label: str
+    icon: str
+    severity: str
+    description: str
+
 
 class TeamAnalyticsResponse(BaseModel):
     """Team analytics response"""
@@ -1204,7 +1228,7 @@ class TeamAnalyticsResponse(BaseModel):
     security: SecurityMetrics
     aiAnalysis: AIAnalysis
     healthStatus: str
-    riskFlags: List[str]
+    riskFlags: List[RiskFlagItem] = []
     lastAnalyzedAt: Optional[str] = None
     repoUrl: Optional[str] = None
     createdAt: Optional[str] = None
@@ -1222,6 +1246,14 @@ class TeamAnalyticsResponse(BaseModel):
     languageBreakdown: Optional[List[LanguageBreakdownItem]] = None
 
 
+class CommitFile(BaseModel):
+    """File changed in a commit"""
+    file: str
+    additions: int = 0
+    deletions: int = 0
+    patch: Optional[str] = None
+
+
 class CommitDetail(BaseModel):
     """Individual commit detail"""
     sha: str
@@ -1232,6 +1264,7 @@ class CommitDetail(BaseModel):
     additions: int
     deletions: int
     filesChanged: int
+    files: List[CommitFile] = []
 
 
 class TeamCommitsResponse(BaseModel):

@@ -61,7 +61,7 @@ services:
       - ./celery_app.py:/app/celery_app.py
       - ./reports:/app/reports
       - ./logs:/app/logs
-    command: celery -A celery_app worker --loglevel=info -Q analysis,batch,dlq --concurrency=2
+    command: celery -A celery_app worker --loglevel=info -Q analysis,batch,dlq,default --concurrency=2
     depends_on:
       - api
     networks:

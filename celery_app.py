@@ -65,6 +65,7 @@ celery_app.conf.task_routes = {
     'celery_worker.analyze_repository_task': {'queue': 'analysis'},
     'celery_worker.process_batch_sequential': {'queue': 'batch'},
     'celery_worker.move_to_dlq': {'queue': 'dlq'},
+    'celery_worker.update_team_health_status': {'queue': 'default'},
 }
 
 # Celery Beat Schedule (Periodic Tasks)
@@ -82,6 +83,12 @@ celery_app.conf.beat_schedule = {
     'retry-dlq-nightly': {
         'task': 'celery_worker.retry_dlq_jobs',
         'schedule': crontab(hour=2, minute=0),
+    },
+    
+    # Update team health status - Every 2 hours
+    'update-health-status': {
+        'task': 'celery_worker.update_team_health_status',
+        'schedule': crontab(minute=0, hour='*/2'),  # Every 2 hours
     },
 }
 

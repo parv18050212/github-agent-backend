@@ -63,8 +63,10 @@ async def get_admin_dashboard(
     batch = batch_response.data[0]
     
     # Get total teams count
-    teams_response = supabase.table("teams").select("id, health_status, mentor_id, last_activity, created_at, team_name").eq("batch_id", batchId).execute()
-    teams = teams_response.data
+    teams_response = supabase.table("teams").select(
+        "id, health_status, mentor_id, last_activity, created_at, team_name"
+    ).eq("batch_id", batchId).execute()
+    teams = teams_response.data or []
     
     # Calculate overview stats
     total_teams = len(teams)
@@ -72,12 +74,15 @@ async def get_admin_dashboard(
     inactive_teams = total_teams - active_teams
     unassigned_teams = len([t for t in teams if not t.get("mentor_id")])
     
-    # Get health distribution
+    # Get health distribution from stored health_status
     health_dist = {
         "onTrack": len([t for t in teams if t.get("health_status") == "on_track"]),
         "atRisk": len([t for t in teams if t.get("health_status") == "at_risk"]),
         "critical": len([t for t in teams if t.get("health_status") == "critical"])
     }
+    # Count teams with no/null health_status as "on_track"
+    null_health = total_teams - (health_dist["onTrack"] + health_dist["atRisk"] + health_dist["critical"])
+    health_dist["onTrack"] += null_health
     
     # Get total students count (from students table)
     team_ids = [t.get("id") for t in teams if t.get("id")]

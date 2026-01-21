@@ -7,15 +7,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta, timezone
 import json
+import httpx
+import os
 
 from ..middleware.auth import get_current_user, AuthUser
-from ..database import get_supabase_admin_client
+from ..database import get_supabase_admin_client, get_supabase
 from ..schemas import (
     TeamAnalyticsResponse,
     TeamCommitsResponse,
-    TeamFileTreeResponse
+    TeamFileTreeResponse,
+    CommitDetail
 )
 from ..services.frontend_adapter import FrontendAdapter
+from ..utils.health import calculate_team_health, get_risk_flag_display
 
 router = APIRouter(prefix="/api/teams", tags=["analytics"])
 
@@ -379,16 +383,24 @@ async def get_team_analytics(
         top_file_types = []
         author_stat = commit_details_stats.get(author, {})
         if author_stat.get("top_file_types"):
-            top_file_types = [
-                (item.split('(')[0].strip())
-                for item in author_stat["top_file_types"].split(",")
-            ]
-            top_file_types = [
-                (t if t.startswith(".") else f".{t}")
-                for t in top_file_types if t and t != "no_ext"
-            ]
+            for item in author_stat["top_file_types"].split(","):
+                try:
+                    parts = item.strip().split('(')
+                    name = parts[0].strip()
+                    count = 0
+                    if len(parts) > 1:
+                        count_str = parts[1].replace(')', '').strip()
+                        count = int(count_str) if count_str.isdigit() else 0
+                    
+                    if name and name != "no_ext":
+                        # Clean name: remove leading dot and uppercase
+                        name = name.lstrip('.').upper()
+                        top_file_types.append({"name": name, "count": count})
+                except Exception:
+                    continue
+                    
         if not top_file_types:
-            top_file_types = [".unknown"]
+            top_file_types = [{"name": "UNKNOWN", "count": 0}]
 
         contributor_total = stats.get("commits", 0)
         active_days_count = len(stats["active_days"])
@@ -519,6 +531,23 @@ async def get_team_analytics(
     constructive_feedback = judge_data.get("constructive_feedback", "") if isinstance(judge_data, dict) else ""
     strengths = _split_feedback(positive_feedback)
     improvements = _split_feedback(constructive_feedback)
+    
+    # Calculate health status in real-time for accuracy
+    health_status, risk_flags = calculate_team_health(
+        report_json=report_json,
+        team_members_count=len(contributors) if contributors else 4,
+        last_activity=team.get("last_activity"),
+        created_at=team.get("created_at")
+    )
+    
+    # Format risk flags with display info
+    risk_flags_display = [
+        {
+            "flag": flag,
+            **get_risk_flag_display(flag)
+        }
+        for flag in risk_flags
+    ]
 
     return {
         "teamId": teamId,
@@ -558,8 +587,8 @@ async def get_team_analytics(
             "strengths": strengths,
             "improvements": improvements
         },
-        "healthStatus": team.get("health_status", "on_track"),
-        "riskFlags": team.get("risk_flags") or [],
+        "healthStatus": health_status,
+        "riskFlags": risk_flags_display,
         "lastAnalyzedAt": project.get("created_at"),
         "repoUrl": project.get("repo_url") or team.get("repo_url"),
         "createdAt": team.get("created_at") or project.get("created_at"),
@@ -620,66 +649,89 @@ async def get_team_commits(
         }
     
     project = project_response.data[0]
-    analysis_result = project.get("analysis_result", {})
     
-    if isinstance(analysis_result, str):
-        try:
-            analysis_result = json.loads(analysis_result)
-        except:
-            analysis_result = {}
-    
-    # Extract commits from commit patterns or contributors
-    # Note: In a real implementation, this would fetch from Git API or stored commit data
-    commit_forensics = analysis_result.get("commitForensics", {})
-    contributors = commit_forensics.get("contributors", [])
-    
-    # Build commit list from available data (simplified)
-    all_commits = []
-    for contributor in contributors:
-        commits_count = contributor.get("commits", 0)
-        contributor_name = contributor.get("name", "Unknown")
+    # Try to get report data from report_json (preferred) or analysis_result
+    report = project.get("report_json")
+    if not report:
+        report = project.get("analysis_result")
         
-        # Generate sample commits (in production, fetch real commits)
-        for i in range(min(commits_count, 10)):  # Limit for demo
-            all_commits.append({
-                "sha": f"commit-{contributor_name}-{i}",
-                "author": contributor_name,
-                "authorEmail": contributor.get("email", "unknown@example.com"),
-                "message": f"Commit by {contributor_name}",
-                "date": datetime.now().isoformat(),
-                "additions": contributor.get("additions", 0) // commits_count if commits_count > 0 else 0,
-                "deletions": contributor.get("deletions", 0) // commits_count if commits_count > 0 else 0,
-                "filesChanged": 1
-            })
+    if isinstance(report, str):
+        try:
+            report = json.loads(report)
+        except:
+            report = {}
+            
+    if not report:
+         return {
+            "commits": [],
+            "total": 0,
+            "page": page,
+            "pageSize": pageSize
+        }
+
+    # Extract commits from report
+    commit_details = report.get("commit_details", {})
+    all_commits_data = commit_details.get("all_commits", [])
     
-    # Apply filters
-    filtered_commits = all_commits
-    
+    # Fallback to forensics if commit_details not found
+    if not all_commits_data:
+        # Try finding in forensics or other locations if needed
+        pass
+
+    # Filter by author if provided
     if author:
-        author_lower = author.lower()
-        filtered_commits = [c for c in filtered_commits if author_lower in c["author"].lower()]
-    
+        all_commits_data = [c for c in all_commits_data if c.get("author") == author]
+
+    # Filter by date if provided
     if startDate:
-        filtered_commits = [c for c in filtered_commits if c["date"] >= startDate]
-    
+        all_commits_data = [c for c in all_commits_data if c.get("date") and c.get("date") >= startDate]
     if endDate:
-        filtered_commits = [c for c in filtered_commits if c["date"] <= endDate]
+        all_commits_data = [c for c in all_commits_data if c.get("date") and c.get("date") <= endDate]
+
+    # Sort by date descending (assuming ISO format)
+    # They usually come sorted from git, but good to ensure
+    all_commits_data.sort(key=lambda x: x.get("date", ""), reverse=True)
+
+    # Check total before pagination
+    total_commits = len(all_commits_data)
     
-    # Sort by date descending
-    filtered_commits.sort(key=lambda x: x["date"], reverse=True)
+    # Pagination
+    start_idx = (page - 1) * pageSize
+    end_idx = start_idx + pageSize
+    paginated_commits = all_commits_data[start_idx:end_idx]
     
-    # Apply pagination
-    total = len(filtered_commits)
-    start = (page - 1) * pageSize
-    end = start + pageSize
-    commits_page = filtered_commits[start:end]
-    
+    # Map to response schema
+    result_commits = []
+    for c in paginated_commits:
+        files_changed = c.get("files_changed", [])
+        files_count = len(files_changed) if isinstance(files_changed, list) else 0
+        
+        result_commits.append({
+            "sha": c.get("hash", ""),
+            "author": c.get("author", "Unknown"),
+            "authorEmail": c.get("email", ""),
+            "message": c.get("message", ""),
+            "date": c.get("date", ""),
+            "additions": c.get("additions", 0),
+            "deletions": c.get("deletions", 0),
+            "filesChanged": files_count,
+            "files": [
+                {
+                    "file": f.get("file") or f.get("path", ""),
+                    "additions": f.get("additions", 0),
+                    "deletions": f.get("deletions", 0)
+                } for f in files_changed
+            ] if isinstance(files_changed, list) else []
+        })
+
     return {
-        "commits": commits_page,
-        "total": total,
+        "commits": result_commits,
+        "total": total_commits,
         "page": page,
         "pageSize": pageSize
     }
+    
+
 
 
 @router.get("/{teamId}/file-tree", response_model=TeamFileTreeResponse)
@@ -784,3 +836,100 @@ async def get_team_file_tree(
         "totalFiles": total_files,
         "totalSize": total_size
     }
+
+@router.get("/{teamId}/commits/{sha}/diff", response_model=CommitDetail)
+async def get_team_commit_diff(
+    teamId: str = Path(..., description="Team ID"),
+    sha: str = Path(..., description="Commit SHA"),
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Get detailed commit information including patches/diffs from GitHub.
+    """
+    supabase = get_supabase()
+    
+    # Verify access
+    team = await verify_team_access(teamId, current_user, supabase)
+    
+    repo_url = team.get("repo_url")
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="Team has no repository URL")
+        
+    try:
+        # Extract owner/repo from URL
+        cleaned = repo_url.rstrip("/").replace(".git", "")
+        if "github.com/" in cleaned:
+            parts = cleaned.split("github.com/")[1].split("/")
+            if len(parts) >= 2:
+                repo_path = f"{parts[0]}/{parts[1]}"
+            else:
+                raise ValueError("Invalid GitHub URL format")
+        elif "github.com:" in cleaned:
+            parts = cleaned.split("github.com:")[1].split("/")
+            if len(parts) >= 2:
+                repo_path = f"{parts[0]}/{parts[1]}"
+            else:
+                repo_path = cleaned.split("github.com:")[1] # Fallback for simple git@ formats
+        else:
+            raise ValueError("Only GitHub repositories are supported for diff view")
+            
+        # Get GitHub token
+        gh_token = os.getenv("GH_API_KEY")
+        if not gh_token:
+            raise HTTPException(status_code=500, detail="GitHub API key not configured")
+            
+        api_url = f"https://api.github.com/repos/{repo_path}/commits/{sha}"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                api_url,
+                headers={
+                    "Authorization": f"Bearer {gh_token}",
+                    "Accept": "application/vnd.github.v3+json"
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code, 
+                    detail=f"GitHub API error: {response.text}"
+                )
+                
+            data = response.json()
+            
+            # Map GitHub response to our CommitDetail schema
+            commit_info = data.get("commit", {})
+            files = data.get("files", [])
+            stats = data.get("stats", {})
+            
+            result = {
+                "sha": sha,
+                "author": commit_info.get("author", {}).get("name", "Unknown"),
+                "authorEmail": commit_info.get("author", {}).get("email", ""),
+                "message": commit_info.get("message", ""),
+                "date": commit_info.get("author", {}).get("date", ""),
+                "additions": stats.get("additions", 0) if isinstance(stats, dict) else 0,
+                "deletions": stats.get("deletions", 0) if isinstance(stats, dict) else 0,
+                "filesChanged": len(files),
+                "files": [
+                    {
+                        "file": f.get("filename", ""),
+                        "additions": f.get("additions", 0),
+                        "deletions": f.get("deletions", 0),
+                        "patch": f.get("patch")
+                    } for f in files
+                ]
+            }
+            
+            # Recalculate stats if they are missing from GitHub
+            if not result["additions"] and not result["deletions"] and files:
+                result["additions"] = sum(f.get("additions", 0) for f in files)
+                result["deletions"] = sum(f.get("deletions", 0) for f in files)
+            
+            return result
+            
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Failed to fetch commit diff: {str(e)}")

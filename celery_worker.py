@@ -456,3 +456,114 @@ def send_completion_notification(results: dict):
     # )
     
     return {'notification_sent': True, 'method': 'console_log'}
+
+
+@celery_app.task
+def update_team_health_status():
+    """
+    Periodic task to update health status for all teams.
+    Runs every 2 hours via Celery Beat.
+    
+    Calculates health status and risk flags based on:
+    - Days since last commit
+    - Contribution balance
+    - Team participation rate
+    - Commit velocity trends
+    
+    Returns:
+        dict: Summary of teams updated
+    """
+    logger.info("="*60)
+    logger.info("🏥 Starting Team Health Status Update")
+    logger.info("="*60)
+    
+    try:
+        from src.api.backend.utils.health import calculate_team_health
+        import json
+        
+        supabase = get_supabase_admin_client()
+        
+        # Get all teams with basic info
+        teams_response = supabase.table("teams").select(
+            "id, team_name, last_activity, created_at"
+        ).execute()
+        
+        teams = teams_response.data or []
+        logger.info(f"📊 Processing {len(teams)} teams")
+        
+        # Get all projects with their report_json (projects have team_id)
+        projects_response = supabase.table("projects").select(
+            "team_id, report_json"
+        ).execute()
+        
+        # Build a lookup dict: team_id -> report_json
+        team_reports = {}
+        for project in (projects_response.data or []):
+            if project.get("team_id"):
+                team_reports[project["team_id"]] = project.get("report_json")
+        
+        updated = 0
+        errors = 0
+        health_counts = {"on_track": 0, "at_risk": 0, "critical": 0}
+        
+        for team in teams:
+            try:
+                # Get report from lookup (comes from projects table)
+                report_json = team_reports.get(team["id"])
+                if isinstance(report_json, str):
+                    try:
+                        report_json = json.loads(report_json)
+                    except:
+                        report_json = None
+                
+                # Get member count (assume 4 if not known)
+                team_members_count = 4
+                if report_json and report_json.get("author_stats"):
+                    team_members_count = max(4, len(report_json.get("author_stats", [])))
+                
+                # Calculate health
+                health_status, risk_flags = calculate_team_health(
+                    report_json=report_json,
+                    team_members_count=team_members_count,
+                    last_activity=team.get("last_activity"),
+                    created_at=team.get("created_at")
+                )
+                
+                # Update team in database
+                supabase.table("teams").update({
+                    "health_status": health_status,
+                    "risk_flags": risk_flags,
+                    "last_health_check": datetime.utcnow().isoformat()
+                }).eq("id", team["id"]).execute()
+                
+                updated += 1
+                health_counts[health_status] = health_counts.get(health_status, 0) + 1
+                
+                if risk_flags:
+                    logger.debug(f"  {team['team_name']}: {health_status} - {risk_flags}")
+                    
+            except Exception as e:
+                logger.error(f"Error updating team {team.get('team_name')}: {e}")
+                errors += 1
+        
+        results = {
+            "total_teams": len(teams),
+            "updated": updated,
+            "errors": errors,
+            "health_distribution": health_counts
+        }
+        
+        logger.info("="*60)
+        logger.info(f"✅ Health update complete:")
+        logger.info(f"   On Track: {health_counts.get('on_track', 0)}")
+        logger.info(f"   At Risk: {health_counts.get('at_risk', 0)}")
+        logger.info(f"   Critical: {health_counts.get('critical', 0)}")
+        logger.info(f"   Errors: {errors}")
+        logger.info("="*60)
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Health update task failed: {e}")
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
