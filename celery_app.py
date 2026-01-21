@@ -67,5 +67,26 @@ celery_app.conf.task_routes = {
     'celery_worker.move_to_dlq': {'queue': 'dlq'},
 }
 
+# Celery Beat Schedule (Periodic Tasks)
+from celery.schedules import crontab
+
+celery_app.conf.beat_schedule = {
+    # Weekly batch analysis - Every Monday at 9 AM IST
+    'weekly-batch-analysis': {
+        'task': 'celery_worker.auto_trigger_batch_analysis',
+        'schedule': crontab(day_of_week=1, hour=9, minute=0),
+        'args': (False,),  # force=False (respect 7-day interval)
+    },
+    
+    # Retry DLQ jobs - Every night at 2 AM IST
+    'retry-dlq-nightly': {
+        'task': 'celery_worker.retry_dlq_jobs',
+        'schedule': crontab(hour=2, minute=0),
+    },
+}
+
+# Timezone for Beat scheduler
+celery_app.conf.timezone = 'Asia/Kolkata'  # IST
+
 if __name__ == '__main__':
     celery_app.start()

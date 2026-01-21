@@ -108,11 +108,24 @@ def clone_repo(url: str, ref: str = "HEAD", depth: int = None) -> str:
         else:
             Repo.clone_from(url, tempdir)
     except Exception:
-        # fallback to git CLI for some cases
-        cmd = ["git", "clone", url, tempdir]
-        if depth:
-            cmd.extend(["--depth", str(depth)])
-        subprocess.check_call(cmd)
+        # fallback to git CLI
+        try:
+            cmd = ["git", "clone", url, tempdir]
+            if depth:
+                cmd.extend(["--depth", str(depth)])
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError:
+             # Retry with Auth Token if available (for private repos)
+             token = os.getenv("GH_API_KEY")
+             if token and "github.com" in url and "@" not in url:
+                 print(f"      🔐 Retrying with GitHub Token...")
+                 auth_url = url.replace("https://", f"https://{token}@")
+                 cmd = ["git", "clone", auth_url, tempdir]
+                 if depth:
+                     cmd.extend(["--depth", str(depth)])
+                 subprocess.check_call(cmd)
+             else:
+                 raise
     return tempdir
 
 def cleanup_repo(path: str):

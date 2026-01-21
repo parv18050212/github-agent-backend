@@ -67,19 +67,30 @@ async def get_current_user(
         # Get user metadata from the token response (may be stale)
         user_metadata = user.user_metadata or {}
         
-        # IMPORTANT: Fetch FRESH role from Supabase Admin API
-        # This ensures role changes take effect immediately without logout
+        # IMPORTANT: Fetch FRESH role from users table first (where admin panel updates it)
+        # Fall back to app_metadata only if users table lookup fails
         role = "mentor"  # Default fallback
         try:
             admin_client = get_supabase_admin_client()
-            admin_user = admin_client.auth.admin.get_user_by_id(user_id)
-            if admin_user and admin_user.user:
-                fresh_app_metadata = admin_user.user.app_metadata or {}
-                fresh_user_metadata = admin_user.user.user_metadata or {}
-                role = fresh_app_metadata.get("role") or fresh_user_metadata.get("role") or "mentor"
-                print(f"[Auth] Fresh role from Admin API: {role} (app_metadata: {fresh_app_metadata})")
-            else:
-                print(f"[Auth] Admin API returned no user data")
+            
+            # First, check the users table (where role is updated by admin panel)
+            users_result = admin_client.table("users").select("role").eq("id", user_id).execute()
+            if users_result.data and len(users_result.data) > 0:
+                db_role = users_result.data[0].get("role")
+                if db_role:
+                    role = db_role
+                    print(f"[Auth] Role from users table: {role}")
+            
+            # If no role in users table, fall back to Supabase auth metadata
+            if role == "mentor":
+                admin_user = admin_client.auth.admin.get_user_by_id(user_id)
+                if admin_user and admin_user.user:
+                    fresh_app_metadata = admin_user.user.app_metadata or {}
+                    fresh_user_metadata = admin_user.user.user_metadata or {}
+                    metadata_role = fresh_app_metadata.get("role") or fresh_user_metadata.get("role")
+                    if metadata_role:
+                        role = metadata_role
+                    print(f"[Auth] Fallback role from Admin API: {role} (app_metadata: {fresh_app_metadata})")
         except Exception as admin_err:
             # Fallback to token claims if admin API fails
             print(f"[Auth] Admin API error, falling back to token: {admin_err}")

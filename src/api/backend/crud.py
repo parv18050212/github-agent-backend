@@ -251,6 +251,122 @@ class AnalysisJobCRUD:
         return result.data[0] if result.data else None
     
     @staticmethod
+    def list_jobs(skip: int = 0, limit: int = 50, status: Optional[str] = None, latest_only: bool = True) -> tuple[List[Dict[str, Any]], int]:
+        """
+        List analysis status for projects (including pending ones).
+        Queries PROJECTS table and joins latest analysis_job.
+        """
+        supabase = get_supabase_client()
+        
+        # 1. Query Projects
+        # Select project fields + team name (via join) + latest job (via join?)
+        # Supabase join: projects check tables... teams(name).
+        # And analysis_jobs.
+        
+        # Note: 'latest_only' is effectively always True if we query projects as primary,
+        # unless we want to show multiple jobs per project, which this view doesn't really support well if primary is project.
+        # Given the requirement "show list of eligible teams", we generally want 1 row per team/project.
+        
+        query = (supabase.table("projects")
+                 .select("id, repo_url, team_name, status, created_at, analysis_jobs(*)", count="exact")
+                 .order("created_at", desc=True))
+                 
+        if status:
+            if status == "pending":
+                 # Match projects where status is pending
+                 query = query.eq("status", "pending")
+            else:
+                 # Match projects where status matches
+                 # Note: 'running' in stats might be 'analyzing' in project
+                 if status == "running":
+                     query = query.eq("status", "analyzing")
+                 else:
+                     query = query.eq("status", status)
+
+        # Pagination
+        query = query.range(skip, skip + limit - 1)
+        
+        result = query.execute()
+        total = result.count if hasattr(result, 'count') else len(result.data)
+        
+        # Transform result to match frontend expectation
+        # Frontend expects flat object with job details + team_name
+        transformed_jobs = []
+        
+        for p in result.data:
+            jobs = p.get("analysis_jobs", [])
+            # Sort jobs by started_at desc if multiple (Supabase join might return list)
+            latest_job = None
+            if jobs:
+                jobs.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+                latest_job = jobs[0]
+            
+            # Construct row
+            row = {
+                "job_id": latest_job.get("id") if latest_job else None,
+                "project_id": p.get("id"),
+                "team_name": p.get("team_name") or "Unknown Team",
+                "repo_url": p.get("repo_url"),
+                "status": (latest_job.get("status") if latest_job else p.get("status")) or "pending", # Job status takes precedence if exists
+                "progress": latest_job.get("progress", 0) if latest_job else 0,
+                "current_stage": latest_job.get("current_stage") if latest_job else None,
+                "started_at": latest_job.get("started_at") if latest_job else p.get("created_at"), # Use project create time if no job
+                "completed_at": latest_job.get("completed_at") if latest_job else None,
+                "error_message": latest_job.get("error_message") if latest_job else None
+            }
+            transformed_jobs.append(row)
+            
+        return transformed_jobs, total
+
+    @staticmethod
+    def get_global_stats(latest_only: bool = True, batch_id: Optional[str] = None) -> Dict[str, int]:
+        """
+        Get global job statistics (counts by status)
+        Only counts jobs for currently existing projects.
+        
+        Args:
+            latest_only: If True, only count the latest job per project
+            batch_id: Optional Batch UUID to filter by
+        """
+        supabase = get_supabase_client()
+        
+        try:
+            # 1. Fetch ALL projects (filtered by batch if needed) to get the true source of truth
+            query = supabase.table("projects").select("id, status")
+            
+            if batch_id:
+                teams_result = supabase.table("teams").select("id").eq("batch_id", batch_id).execute()
+                team_ids = [t["id"] for t in teams_result.data] if teams_result.data else []
+                if not team_ids:
+                     return {"queued": 0, "running": 0, "completed": 0, "failed": 0, "pending": 0}
+                query = query.in_("team_id", team_ids)
+                
+            projects_result = query.execute()
+            projects = projects_result.data
+            
+            stats = {"queued": 0, "running": 0, "completed": 0, "failed": 0, "pending": 0}
+            
+            # Count based on Project Status
+            # We assume Project status is synced with Job status, or we default to 'pending'
+            for p in projects:
+                status = (p.get("status") or "pending").lower()
+                
+                # Normalize status
+                if status == "analyzing":
+                    stats["running"] += 1
+                elif status in stats:
+                    stats[status] += 1
+                else:
+                    # Treat unknown as pending or misc?
+                    stats["pending"] += 1
+            
+            return stats
+            
+        except Exception as e:
+            print(f"Error fetching global stats: {e}")
+            return {"queued": 0, "running": 0, "completed": 0, "failed": 0}
+
+    @staticmethod
     def delete_by_project(project_id: UUID) -> bool:
         """Delete all analysis jobs for a project"""
         supabase = get_supabase_client()

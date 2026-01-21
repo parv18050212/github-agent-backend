@@ -742,7 +742,7 @@ async def delete_team(
 
 @router.get("/{team_id}/progress")
 async def get_team_progress(
-    team_id: int,
+    team_id: UUID,
     current_user: AuthUser = Depends(get_current_user)
 ):
     """

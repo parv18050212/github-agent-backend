@@ -94,6 +94,29 @@ class AnalysisStatusResponse(BaseModel):
         }
 
 
+class AnalysisJobListItem(BaseModel):
+    """Analysis job list item"""
+    job_id: Optional[UUID] = None
+    project_id: UUID
+    repo_url: str
+    team_name: Optional[str] = None
+    status: str
+    progress: int
+    current_stage: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class AnalysisJobListResponse(BaseModel):
+    """Response for analysis job list"""
+    jobs: List[AnalysisJobListItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 class LanguageBreakdown(BaseModel):
     """Language usage breakdown"""
     name: str

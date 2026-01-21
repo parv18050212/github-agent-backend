@@ -25,10 +25,16 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
     try:
         if isinstance(value, datetime):
-            return value
-        if value.endswith("Z"):
+            dt = value
+        elif value.endswith("Z"):
             value = value.replace("Z", "+00:00")
-        return datetime.fromisoformat(value)
+            dt = datetime.fromisoformat(value)
+        else:
+            dt = datetime.fromisoformat(value)
+            
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except Exception:
         return None
 
@@ -226,6 +232,7 @@ async def get_team_analytics(
             "languageBreakdown": []
         }
     
+
     # Get project analysis data
     project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
     
@@ -318,6 +325,7 @@ async def get_team_analytics(
     total_commits = len(all_commits) or commit_details.get("total_commits") or report_json.get("total_commits") or 0
     active_days = len(daily_counts)
     avg_commits_per_day = round((total_commits / active_days), 1) if active_days > 0 else 0
+
 
     week_cutoff = now - timedelta(days=7)
     last_week_commits = sum(
@@ -551,7 +559,7 @@ async def get_team_analytics(
             "improvements": improvements
         },
         "healthStatus": team.get("health_status", "on_track"),
-        "riskFlags": team.get("risk_flags", []),
+        "riskFlags": team.get("risk_flags") or [],
         "lastAnalyzedAt": project.get("created_at"),
         "repoUrl": project.get("repo_url") or team.get("repo_url"),
         "createdAt": team.get("created_at") or project.get("created_at"),

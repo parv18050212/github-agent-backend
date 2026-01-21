@@ -238,12 +238,13 @@ def node_aggregator(ctx):
         viz_files.append({"path": fpath, "S_llm": s_ai, "S_alg": s_plag, "S_cross": max(s_ai, s_plag)})
         
         if risk > 15: 
+            match_path = plag.get(fpath, {}).get("match", "") or ""
             detailed_files.append({
                 "name": os.path.basename(fpath),
                 "ai_pct": s_ai * 100,
                 "plag_pct": s_plag * 100,
                 "risk": risk,
-                "match": os.path.basename(plag.get(fpath, {}).get("match", ""))
+                "match": os.path.basename(match_path) if match_path else "None"
             })
             
     detailed_files.sort(key=lambda x: x['risk'], reverse=True)

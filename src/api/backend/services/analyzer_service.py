@@ -18,8 +18,56 @@ from src.api.backend.crud import ProjectCRUD
 from src.utils.git_utils import cleanup_repo
 
 
+
 class AnalyzerService:
     """Service to run repository analysis with progress tracking"""
+
+    @staticmethod
+    def _fetch_github_languages(repo_url: str, token: str) -> Dict[str, float]:
+        """Fetch language breakdown from GitHub API"""
+        import httpx
+        
+        try:
+            # Extract owner/repo
+            cleaned = repo_url.rstrip("/").replace(".git", "")
+            parts = cleaned.split("/")
+            if len(parts) < 2:
+                return {}
+            repo_path = f"{parts[-2]}/{parts[-1]}"
+            
+            api_url = f"https://api.github.com/repos/{repo_path}/languages"
+            
+            with httpx.Client() as client:
+                response = client.get(
+                    api_url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github.v3+json"
+                    },
+                    timeout=10.0
+                )
+                
+                if response.status_code != 200:
+                    print(f"      ⚠️  GitHub API Loopkup Failed: {response.status_code}")
+                    return {}
+                
+                data = response.json()
+                total_bytes = sum(data.values())
+                
+                if total_bytes == 0:
+                    return {}
+                    
+                breakdown = {}
+                for lang, bytes_count in data.items():
+                    percentage = round((bytes_count / total_bytes) * 100, 2)
+                    breakdown[lang] = percentage
+                    
+                return breakdown
+                
+        except Exception as e:
+            print(f"      ⚠️  Language fetch error: {e}")
+            return {}
+
     
     @staticmethod
     def analyze_repository(project_id: UUID, job_id: UUID, repo_url: str, team_name: str = None) -> Dict[str, Any]:
@@ -44,7 +92,7 @@ class AnalyzerService:
             tracker.update("starting")
             
             # Prepare output directory
-            output_dir = f"report/{team_name or str(project_id)}"
+            output_dir = f"reports/{team_name or str(project_id)}"
             os.makedirs(output_dir, exist_ok=True)
             
             # Get API keys from environment
@@ -81,6 +129,21 @@ class AnalyzerService:
             if report and "repo" in report:
                 # Extract repo path if available
                 pass
+
+            # Fetch languages from GitHub API
+            gh_token = os.getenv("GH_API_KEY")
+            if gh_token and repo_url:
+                try:
+                    languages = AnalyzerService._fetch_github_languages(repo_url, gh_token)
+                    if languages:
+                        print(f"      📝 Fetched language data: {list(languages.keys())}")
+                        if "final_report" in final_report:
+                            final_report["final_report"]["languages"] = languages
+                        else:
+                            final_report["languages"] = languages
+                        report = final_report if "final_report" not in final_report else final_report["final_report"]
+                except Exception as e:
+                    print(f"      ⚠️  Failed to fetch languages: {e}")
             
             # Save results to database
             tracker.update("aggregation", 95)

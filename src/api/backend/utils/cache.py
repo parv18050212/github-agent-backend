@@ -16,6 +16,7 @@ class RedisCache:
     
     _instance: Optional['RedisCache'] = None
     _client: Optional[redis.Redis] = None
+    _connected: bool = False  # Track connection status without repeated pings
     
     # Cache TTL settings (in seconds)
     TTL_SHORT = 30          # 30 seconds - for frequently changing data
@@ -33,44 +34,47 @@ class RedisCache:
             self._connect()
     
     def _connect(self):
-        """Connect to Redis"""
+        """Connect to Redis with connection pooling"""
         redis_url = os.getenv("REDIS_URL")
         
         if not redis_url:
-            print("⚠️  REDIS_URL not set - caching disabled")
+            # Only log once per process
+            if not os.getenv("_REDIS_LOG_SHOWN"):
+                print("⚠️  REDIS_URL not set - caching disabled")
+                os.environ["_REDIS_LOG_SHOWN"] = "1"
+            self._connected = False
             return
         
         try:
+            # Create connection pool for efficiency
             self._client = redis.from_url(
                 redis_url,
                 decode_responses=True,
-                socket_timeout=1,
-                socket_connect_timeout=1
+                socket_timeout=5,
+                socket_connect_timeout=5,
+                socket_keepalive=True,
+                socket_keepalive_options={},
+                health_check_interval=30,
+                max_connections=10,
+                # SSL configuration for rediss:// URLs
+                ssl_cert_reqs=None if redis_url.startswith("rediss://") else None
             )
-            # Test connection
+            # Test connection once
             self._client.ping()
-            print("✅ Redis cache connected")
-        except Exception as e:
-            # Retry with TLS if using standard redis://
-            if redis_url.startswith("redis://"):
-                print(f"⚠️  Standard Redis connection failed ({e}). Retrying with TLS...")
-                try:
-                    tls_url = redis_url.replace("redis://", "rediss://")
-                    self._client = redis.from_url(
-                        tls_url,
-                        decode_responses=True,
-                        socket_timeout=1,
-                        socket_connect_timeout=1,
-                        ssl_cert_reqs=None  # Allow self-signed/cloud certs
-                    )
-                    self._client.ping()
-                    print("✅ Redis cache connected (via TLS upgrade)")
-                    return
-                except Exception as tls_e:
-                     print(f"❌ Redis TLS upgrade also failed: {tls_e}")
+            self._connected = True
             
-            print(f"⚠️  Redis connection failed: {e} - caching disabled")
+            # Only log connection once per process
+            if not os.getenv("_REDIS_LOG_SHOWN"):
+                protocol = "TLS" if redis_url.startswith("rediss://") else "non-TLS"
+                print(f"✅ Redis cache connected ({protocol})")
+                os.environ["_REDIS_LOG_SHOWN"] = "1"
+        except Exception as e:
+            # Only log errors once per process
+            if not os.getenv("_REDIS_LOG_SHOWN"):
+                print(f"⚠️  Redis connection failed: {e} - caching disabled")
+                os.environ["_REDIS_LOG_SHOWN"] = "1"
             self._client = None
+            self._connected = False
     
     @property
     def client(self) -> Optional[redis.Redis]:
@@ -78,13 +82,8 @@ class RedisCache:
     
     @property
     def is_connected(self) -> bool:
-        if self._client is None:
-            return False
-        try:
-            self._client.ping()
-            return True
-        except:
-            return False
+        """Check if Redis is connected (uses cached status, no ping)"""
+        return self._connected
     
     def _make_key(self, prefix: str, *args, **kwargs) -> str:
         """Generate a cache key from prefix and arguments"""

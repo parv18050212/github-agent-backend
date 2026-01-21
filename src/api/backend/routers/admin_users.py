@@ -8,7 +8,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from ..middleware.auth import get_current_user, AuthUser
-from ..database import get_supabase
+from ..database import get_supabase_admin_client
 
 router = APIRouter(prefix="/api/admin", tags=["admin-users"])
 
@@ -53,7 +53,7 @@ async def list_users(current_user: AuthUser = Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     try:
         # Query users table
@@ -118,13 +118,12 @@ async def update_user_role(
             detail="Cannot remove your own admin role"
         )
     
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     try:
         # Update user role
         response = supabase.table("users").update({
-            "role": new_role,
-            "updated_at": datetime.utcnow().isoformat()
+            "role": new_role
         }).eq("id", user_id).execute()
         
         if not response.data:
@@ -135,9 +134,9 @@ async def update_user_role(
         return {
             "id": updated_user["id"],
             "email": updated_user["email"],
-            "role": updated_user["role"],
+            "role": updated_user.get("role"),
             "created_at": updated_user["created_at"],
-            "updated_at": updated_user["updated_at"],
+            "updated_at": updated_user.get("updated_at", updated_user["created_at"]),
             "message": f"User role updated to {new_role or 'no role'}"
         }
         

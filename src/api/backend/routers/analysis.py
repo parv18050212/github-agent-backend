@@ -17,7 +17,8 @@ from src.api.backend.schemas import (
     TechStackItem,
     IssueItem,
     TeamMemberItem,
-    ErrorResponse
+    ErrorResponse,
+    AnalysisJobListResponse
 )
 from src.api.backend.crud import ProjectCRUD, AnalysisJobCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
 from src.api.backend.utils.cache import cache, RedisCache
@@ -252,6 +253,96 @@ async def get_analysis_status(job_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get job status: {str(e)}"
+        )
+
+
+@router.get(
+    "/analysis/stats",
+    response_model=Dict[str, int],
+    responses={500: {"model": ErrorResponse}}
+)
+async def get_analysis_stats(
+    latest: bool = Query(True, description="Count only the latest job per project"),
+    batch_id: Optional[str] = Query(None, description="Filter stats by Batch ID")
+):
+    """
+    Get global analysis statistics
+    
+    Returns counts of projects in each status (queued, running, completed, failed).
+    If latest=true (default), only counts the most recent job for each project.
+    If batch_id is provided, filters stats to only include teams/projects in that batch.
+    """
+    try:
+        stats = AnalysisJobCRUD.get_global_stats(latest_only=latest, batch_id=batch_id)
+        return stats
+    except Exception as e:
+        print(f"Error getting analysis stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get stats: {str(e)}"
+        )
+
+
+@router.get(
+    "/analysis/jobs",
+    response_model=AnalysisJobListResponse,
+    responses={500: {"model": ErrorResponse}}
+)
+async def list_analysis_jobs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    job_status: Optional[str] = Query(None, alias="status", regex="^(queued|running|completed|failed|pending)$"),
+    latest: bool = Query(True, description="Show only the latest job per project")
+):
+    """
+    List all analysis jobs
+    
+    Returns jobs with project details (repo_url, team_name)
+    """
+    try:
+        from math import ceil
+        from src.api.backend.schemas import AnalysisJobListItem, AnalysisJobListResponse
+        
+        skip = (page - 1) * page_size
+        jobs_data, total_jobs = AnalysisJobCRUD.list_jobs(skip=skip, limit=page_size, status=job_status, latest_only=latest)
+        
+        jobs = []
+        for job in jobs_data:
+            # Join data is in 'projects' key
+            project_data = job.get("projects", {}) or {}
+            
+            # Map job_id, handling pending state where it might be None
+            job_id_val = job.get("job_id")
+            job_id = UUID(job_id_val) if job_id_val else None
+            
+            jobs.append(AnalysisJobListItem(
+                job_id=job_id,
+                project_id=UUID(job["project_id"]),
+                repo_url=job.get("repo_url", "Unknown"),
+                team_name=job.get("team_name"),
+                status=job["status"],
+                progress=job.get("progress") or 0,
+                current_stage=job.get("current_stage"),
+                error_message=job.get("error_message"),
+                started_at=job.get("started_at") or datetime.now(),
+                completed_at=job.get("completed_at")
+            ))
+        
+        total_pages = ceil(total_jobs / page_size) if page_size > 0 else 0
+        
+        return AnalysisJobListResponse(
+            jobs=jobs,
+            total=total_jobs,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages
+        )
+        
+    except Exception as e:
+        print(f"Error listing analysis jobs: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list jobs: {str(e)}"
         )
 
 
