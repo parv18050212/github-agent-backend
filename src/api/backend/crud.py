@@ -125,12 +125,32 @@ class ProjectCRUD:
         order: str = "desc",
         page: int = 1,
         page_size: int = 20,
-        status: str = "completed"
+        status: str = "completed",
+        batch_id: Optional[str] = None,
+        mentor_id: Optional[str] = None
     ) -> tuple[List[Dict[str, Any]], int]:
-        """Get ranked projects leaderboard"""
+        """Get ranked projects leaderboard with optional batch and mentor filtering"""
         supabase = get_supabase_client()
         
         query = supabase.table("projects").select("*", count="exact")
+        
+        # Filter by batch or mentor if provided
+        # Use teams.project_id to find projects (teams link TO projects, not vice versa)
+        if batch_id or mentor_id:
+            teams_query = supabase.table("teams").select("project_id")
+            if batch_id:
+                teams_query = teams_query.eq("batch_id", batch_id)
+            if mentor_id:
+                teams_query = teams_query.eq("mentor_id", mentor_id)
+            
+            teams_result = teams_query.execute()
+            # Get project_ids from teams (filter out None values)
+            project_ids = [t["project_id"] for t in teams_result.data if t.get("project_id")] if teams_result.data else []
+            
+            if not project_ids:
+                return [], 0 # No teams match the filter or no projects linked
+            
+            query = query.in_("id", project_ids)
         
         # Filter by status
         query = query.eq("status", status)

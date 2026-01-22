@@ -1,7 +1,4 @@
-"""
-Leaderboard Router
-Endpoints for project rankings and leaderboard an !!
-"""
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from uuid import UUID
 import math
@@ -31,7 +28,9 @@ async def get_leaderboard(
     order: str = Query("desc", description="Sort order (asc or desc)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    status: str = Query("completed", description="Filter by status")
+    status: str = Query("completed", description="Filter by status"),
+    batch_id: Optional[str] = Query(None, description="Filter by batch ID"),
+    mentor_id: Optional[str] = Query(None, description="Filter by mentor ID")
 ):
     """
     Get ranked projects leaderboard
@@ -41,7 +40,10 @@ async def get_leaderboard(
     - **page**: Page number (starts at 1)
     - **page_size**: Number of items per page (max 100)
     - **status**: Filter by status (default: completed)
+    - **batch_id**: Optional batch filter
+    - **mentor_id**: Optional mentor filter
     """
+
     try:
         # Validate sort_by field
         valid_sort_fields = [
@@ -70,7 +72,9 @@ async def get_leaderboard(
             order=order,
             page=page,
             page_size=page_size,
-            status=status
+            status=status,
+            batch_id=batch_id,
+            mentor_id=mentor_id
         )
         
         total_pages = math.ceil(total / page_size) if total > 0 else 0

@@ -110,7 +110,7 @@ async def health_check():
     """Health check endpoint"""
     try:
         # Test Supabase connection
-        from backend.database import get_supabase_client
+        from src.api.backend.database import get_supabase_client
         supabase = get_supabase_client()
         
         # Simple query to test connection
