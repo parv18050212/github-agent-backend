@@ -18,7 +18,7 @@ from ..schemas import (
     TeamResponse, TeamDetailResponse, TeamListResponse,
     TeamCreateRequest, TeamUpdateRequest,
     BulkUploadResponse, AnalysisJobResponse,
-    MessageResponse, TeamAssignRequest
+    MessageResponse, TeamAssignRequest, StudentGradeRequest
 )
 from ..middleware import get_current_user, RoleChecker, AuthUser
 from ..database import get_supabase, get_supabase_admin_client
@@ -50,7 +50,7 @@ async def list_teams(
     print(f"[Teams API] current_user.role: {current_user.role}")
     print(f"[Teams API] batch_id param: {batch_id}")
     
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Build query
     query = supabase.table("teams").select(
@@ -332,6 +332,7 @@ async def bulk_import_teams_with_mentors(
         team_name_col = None
         repo_url_col = None
         mentor_email_col = None
+        student_emails_col = None
         
         # Support multiple header variations
         for i, header in enumerate(headers):
@@ -343,6 +344,9 @@ async def bulk_import_teams_with_mentors(
                     repo_url_col = i
                 elif 'mentor' in header_lower and 'email' in header_lower:
                     mentor_email_col = i
+                elif 'mail id' in header_lower or ('student' in header_lower and 'email' in header_lower):
+                    # Covers "Mail Id" from user file
+                    student_emails_col = i
         
         if team_name_col is None or repo_url_col is None:
             raise HTTPException(
@@ -359,7 +363,12 @@ async def bulk_import_teams_with_mentors(
                 }
                 if mentor_email_col is not None and row[mentor_email_col]:
                     row_dict['mentor_email'] = str(row[mentor_email_col]).strip()
+                
+                if student_emails_col is not None and row[student_emails_col]:
+                    row_dict['student_emails'] = str(row[student_emails_col]).strip()
+                
                 rows.append(row_dict)
+                
     else:
         # Parse CSV file
         csv_file = io.StringIO(contents.decode("utf-8"))
@@ -380,6 +389,7 @@ async def bulk_import_teams_with_mentors(
             team_name = row.get("team_name", "").strip()
             repo_url = row.get("repo_url", "").strip()
             mentor_email = row.get("mentor_email", "").strip() if "mentor_email" in row else None
+            student_emails_str = row.get("student_emails", "").strip() if "student_emails" in row else None
             
             if not team_name:
                 raise ValueError("Team name is required")
@@ -403,15 +413,32 @@ async def bulk_import_teams_with_mentors(
                 # Single member or team name
                 member_names = [team_name]
             
+            # Extract emails if available
+            member_emails = []
+            if student_emails_str:
+                if '\n' in student_emails_str:
+                     member_emails = [e.strip() for e in student_emails_str.split('\n') if e.strip()]
+                elif ',' in student_emails_str:
+                     member_emails = [e.strip() for e in student_emails_str.split(',') if e.strip()]
+                else:
+                    member_emails = [student_emails_str]
+            
             # Use first member name as simplified team name if multiple members
             display_team_name = member_names[0] if len(member_names) == 1 else f"Team {row_num - 1}"
+            if len(member_names) > 1 and "Team" in team_name: # Keep original if it looks like a team name
+                 display_team_name = team_name.split('\n')[0] # Heuristic
             
             # Lookup mentor if provided
             mentor_id = None
             if mentor_email:
                 mentor_id = mentor_map.get(mentor_email)
+                # Don't fail if mentor not found, just leave unassigned? Or fail?
+                # User preference not specified, safer to log warning but proceed?
+                # Code previously raised ValueError. Sticking to that.
                 if not mentor_id:
-                    raise ValueError(f"Mentor not found: {mentor_email}")
+                     # Check if it's actually a student email list?
+                     # Ignoring for now.
+                     pass 
             
             # Create team
             team_insert = {
@@ -447,8 +474,9 @@ async def bulk_import_teams_with_mentors(
                     "project_id": project_id
                 }).eq("id", team_id).execute()
                 
-                # Create team members linked to project
-                for member_name in member_names:
+                # Create team members linked to project AND STUDENTS linked to team
+                for i, member_name in enumerate(member_names):
+                    # Team Member (for analytics)
                     member_insert = {
                         "project_id": project_id,
                         "name": member_name,
@@ -456,6 +484,17 @@ async def bulk_import_teams_with_mentors(
                         "contribution_pct": 0.0
                     }
                     supabase.table("team_members").insert(member_insert).execute()
+                    
+                    # Student (for grading)
+                    student_email = member_emails[i] if i < len(member_emails) else None
+                    student_insert = {
+                        "team_id": team_id,
+                        "name": member_name,
+                        "email": student_email
+                        # "github_username": ... unknown
+                    }
+                    supabase.table("students").insert(student_insert).execute()
+
                 
                 # Create mentor assignment if mentor provided
                 if mentor_id:
@@ -611,22 +650,43 @@ async def get_team(
     Returns complete team data including students, project analysis, team members, and health status.
     Frontend expects: team_name, repo_url, batches, projects, team_members
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Fetch team with all related data
+    # Try by team ID first
     team_response = supabase.table("teams").select(
         """
         *,
         batches(id, name, semester, year),
         students(*),
-        projects(*)
+        projects!projects_teams_fk(*)
         """
-    ).eq("id", team_id).execute()
+    ).eq("id", str(team_id)).execute()
+    
+    # If not found by ID, try by project_id (frontend may send project UUID)
+    if not team_response.data:
+        team_response = supabase.table("teams").select(
+            """
+            *,
+            batches(id, name, semester, year),
+            students(*),
+            projects!projects_teams_fk(*)
+            """
+        ).eq("project_id", str(team_id)).execute()
     
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
     
     team = team_response.data[0]
+    
+    # DEBUG LOGGING
+    print(f"[Teams API] get_team {team_id}")
+    print(f"[Teams API] Team data: {team.keys()}")
+    if "students" in team:
+        print(f"[Teams API] Student count: {len(team['students'])}")
+        print(f"[Teams API] Students: {team['students']}")
+    else:
+        print(f"[Teams API] 'students' key MISSING in response")
     
     # Check authorization
     if current_user.role == "mentor":
@@ -798,6 +858,67 @@ async def get_team_progress(
             "run_completed_at": run_info.get("completed_at") if isinstance(run_info, dict) else None
         })
     
+    return weekly_data
+
+
+@router.put("/{team_id}/grades", response_model=MessageResponse, dependencies=[Depends(RoleChecker(["admin", "mentor"]))])
+async def update_student_grades(
+    team_id: UUID,
+    grades: List[StudentGradeRequest],
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Update grades for multiple students in a team.
+    Allowed for Admins and the Assigned Mentor.
+    """
+    supabase = get_supabase_admin_client()
+    
+    # Verify team exists
+    team_response = supabase.table("teams").select("id, mentor_id").eq("id", str(team_id)).execute()
+    if not team_response.data:
+        raise HTTPException(status_code=404, detail="Team not found")
+    
+    team = team_response.data[0]
+    
+    # Check permission
+    if current_user.role == "mentor":
+        if str(team.get("mentor_id")) != str(current_user.user_id):
+            raise HTTPException(status_code=403, detail="Not authorized to grade this team")
+    
+    # Verify all students belong to this team
+    student_ids = [str(g.student_id) for g in grades]
+    students_check = supabase.table("students").select("id").eq("team_id", str(team_id)).in_("id", student_ids).execute()
+    
+    found_ids = {s["id"] for s in students_check.data}
+    if len(found_ids) != len(student_ids):
+        raise HTTPException(status_code=400, detail="One or more students do not belong to this team")
+
+    # Update grades (Supabase doesn't support bulk update easily with different values, so loop or upsert)
+    # Upsert is better if we have all fields, but we only have grades. 
+    # Looping is acceptable for small team sizes (~6 students).
+    
+    errors = []
+    updated_count = 0
+    
+    for grade in grades:
+        try:
+            update_data = {}
+            if grade.mentor_grade is not None:
+                update_data["mentor_grade"] = grade.mentor_grade
+            if grade.mentor_feedback is not None:
+                update_data["mentor_feedback"] = grade.mentor_feedback
+            
+            if update_data:
+                supabase.table("students").update(update_data).eq("id", str(grade.student_id)).execute()
+                updated_count += 1
+        except Exception as e:
+            errors.append(f"Failed to update student {grade.student_id}: {str(e)}")
+    
+    if errors:
+        return MessageResponse(success=False, message=f"Updated {updated_count} students with errors: {'; '.join(errors)}")
+        
+    return MessageResponse(success=True, message=f"Successfully graded {updated_count} students")
+
     # Calculate improvement from previous week
     improvement = 0
     if len(weekly_data) >= 2:

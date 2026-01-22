@@ -283,11 +283,19 @@ async def get_leaderboard(
             item = FrontendAdapter.transform_leaderboard_item(project, tech_stack)
             results.append(item)
         
+        # FIXED: Return proper schema format instead of raw array
+        response = {
+            "leaderboard": results,
+            "total": len(results),
+            "page": 1,
+            "page_size": len(results)
+        }
+        
         # Cache for 30 seconds
         if not search:
-            cache.set(cache_key, results, RedisCache.TTL_SHORT)
+            cache.set(cache_key, response, RedisCache.TTL_SHORT)
         
-        return results
+        return response
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

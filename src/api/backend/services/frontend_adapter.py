@@ -372,15 +372,18 @@ class FrontendAdapter:
         # Extract scores
         scores = FrontendAdapter._extract_scores(project)
         
+        # FIXED: Return snake_case field names to match frontend LeaderboardItem interface
         return {
             "id": str(project.get("id")),
-            "teamName": project.get("team_name"),
-            "repoUrl": project.get("repo_url"),
-            "techStack": tech_names,
-            "totalScore": scores["totalScore"],
-            "qualityScore": scores["qualityScore"],
-            "securityScore": scores["securityScore"],
-            "originalityScore": scores["originalityScore"],
-            "architectureScore": scores["architectureScore"],
-            "documentationScore": scores["documentationScore"]
+            "team_id": str(project.get("team_id")) if project.get("team_id") else None,
+            "team_name": project.get("team_name"),
+            "repo_url": project.get("repo_url"),
+            "tech_stack": tech_names,
+            "total_score": scores["totalScore"],
+            "quality_score": scores["qualityScore"],
+            "security_score": scores["securityScore"],
+            "originality_score": scores["originalityScore"],
+            "architecture_score": scores["architectureScore"],
+            "documentation_score": scores["documentationScore"],
+            "verdict": project.get("verdict")
         }

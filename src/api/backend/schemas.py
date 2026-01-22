@@ -585,6 +585,8 @@ class StudentResponse(BaseModel):
     lines_added: int
     lines_deleted: int
     last_commit_date: Optional[datetime] = None
+    mentor_grade: Optional[float] = None
+    mentor_feedback: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -596,6 +598,14 @@ class StudentListResponse(BaseModel):
 
 
 # ---------- Mentor Assignment Schemas ----------
+
+
+class StudentGradeRequest(BaseModel):
+    """Request to grade a student"""
+    student_id: UUID
+    mentor_grade: Optional[float] = Field(None, ge=0, le=100)
+    mentor_feedback: Optional[str] = None
+
 
 class MentorAssignmentCreateRequest(BaseModel):
     """Assign mentor to team"""

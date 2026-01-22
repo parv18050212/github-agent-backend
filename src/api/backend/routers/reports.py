@@ -193,12 +193,79 @@ async def get_batch_report(
             }
         )
     elif format == "csv":
-        # In production, generate CSV
-        return JSONResponse(
-            content={
-                "message": "CSV generation not yet implemented",
-                "data": report
+        import csv
+        import io
+        from fastapi.responses import StreamingResponse
+
+        output = io.StringIO()
+        # Updated CSV format to include student details
+        writer = csv.DictWriter(output, fieldnames=[
+            "Rank", "Team Name", "Student Name", "Student Email", "Mentor Grade", "Mentor Feedback",
+            "Total Score", "Quality", "Security", "Originality", "Architecture", 
+            "Documentation", "Health Status", "Verdict", "Mentor", "Frameworks"
+        ])
+        
+        writer.writeheader()
+        
+        # We need to fetch students for each team to do a detailed export
+        # Or we can do a summary export if include_details is False (but user asked for grading export)
+        # We will iterate through teams, then students.
+        
+        for team in teams_data:
+            # Re-fetch team with students since teams_data is a summary list
+            team_id = team.get("teamId") # teams_data uses teamId
+            if not team_id: # Fallback if using raw team object keys
+                 team_id = team.get("id")
+
+            # Efficiently fetch students for this team
+            students_response = supabase.table("students").select("*").eq("team_id", team_id).execute()
+            students = students_response.data or []
+            
+            base_row = {
+                "Rank": team.get("rank"),
+                "Team Name": team.get("teamName"),
+                "Total Score": round(team.get("totalScore", 0), 2),
+                "Quality": round(team.get("qualityScore", 0), 2),
+                "Security": round(team.get("securityScore", 0), 2),
+                "Originality": round(team.get("originalityScore", 0), 2),
+                "Architecture": round(team.get("architectureScore", 0), 2),
+                "Documentation": round(team.get("documentationScore", 0), 2),
+                "Health Status": team.get("healthStatus"),
+                "Verdict": "N/A",
+                "Mentor": team.get("mentorId", "Unassigned"),
+                "Frameworks": ", ".join(team.get("frameworks", []))
             }
+            
+            if not students:
+                # Write one row for the team if no students
+                row = base_row.copy()
+                row.update({
+                    "Student Name": "N/A",
+                    "Student Email": "N/A",
+                    "Mentor Grade": "N/A",
+                    "Mentor Feedback": "N/A"
+                })
+                writer.writerow(row)
+            else:
+                for student in students:
+                    row = base_row.copy()
+                    row.update({
+                        "Student Name": student.get("name"),
+                        "Student Email": student.get("email"),
+                        "Mentor Grade": student.get("mentor_grade", ""),
+                        "Mentor Feedback": student.get("mentor_feedback", "")
+                    })
+                    writer.writerow(row)
+            
+        output.seek(0)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"batch_report_{batchId}_{timestamp}.csv"
+        
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
     
     return report
