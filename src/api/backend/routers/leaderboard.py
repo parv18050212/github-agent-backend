@@ -1,5 +1,7 @@
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status, Depends
+from src.api.backend.utils.auth import get_current_user
+from src.api.backend.middleware.auth import AuthUser
 from uuid import UUID
 import math
 
@@ -30,7 +32,8 @@ async def get_leaderboard(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     status: str = Query("completed", description="Filter by status"),
     batch_id: Optional[str] = Query(None, description="Filter by batch ID"),
-    mentor_id: Optional[str] = Query(None, description="Filter by mentor ID")
+    mentor_id: Optional[str] = Query(None, description="Filter by mentor ID"),
+    current_user: Optional[AuthUser] = Depends(get_current_user)
 ):
     """
     Get ranked projects leaderboard
@@ -43,6 +46,10 @@ async def get_leaderboard(
     - **batch_id**: Optional batch filter
     - **mentor_id**: Optional mentor filter
     """
+    
+    # If user is a mentor, enforce filtering by their ID
+    if current_user and current_user.role == "mentor":
+        mentor_id = str(current_user.user_id)
 
     try:
         # Validate sort_by field

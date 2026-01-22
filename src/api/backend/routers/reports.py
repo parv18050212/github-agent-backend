@@ -31,7 +31,7 @@ async def get_batch_report(
     Admin only.
     """
     # Check admin role
-    if current_user.get("role") != "admin":
+    if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
     supabase = get_supabase()
@@ -45,7 +45,7 @@ async def get_batch_report(
     
     # Get all teams in the batch with their project data
     teams_response = supabase.table("teams").select(
-        "*, projects(*)"
+        "*, projects!projects_teams_fk(*)"
     ).eq("batch_id", batchId).execute()
     
     teams = teams_response.data or []
@@ -80,8 +80,9 @@ async def get_batch_report(
             scores.append(total_score)
         
         teams_data.append({
+            "teamId": team["id"],
             "rank": idx + 1,  # Will be re-ranked after sorting
-            "teamName": team["name"],
+            "teamName": team["team_name"],
             "totalScore": total_score,
             "qualityScore": analysis_result.get("qualityScore", 0),
             "securityScore": analysis_result.get("securityScore", 0),
@@ -200,7 +201,9 @@ async def get_batch_report(
         output = io.StringIO()
         # Updated CSV format to include student details
         writer = csv.DictWriter(output, fieldnames=[
-            "Rank", "Team Name", "Student Name", "Student Email", "Mentor Grade", "Mentor Feedback",
+            "Rank", "Team Name", "Student Name", "Student Email", 
+            "Admin Grade", "Admin Feedback", 
+            "Mentor Grade", "Mentor Feedback",
             "Total Score", "Quality", "Security", "Originality", "Architecture", 
             "Documentation", "Health Status", "Verdict", "Mentor", "Frameworks"
         ])
@@ -242,6 +245,8 @@ async def get_batch_report(
                 row.update({
                     "Student Name": "N/A",
                     "Student Email": "N/A",
+                    "Admin Grade": "N/A",
+                    "Admin Feedback": "N/A",
                     "Mentor Grade": "N/A",
                     "Mentor Feedback": "N/A"
                 })
@@ -252,6 +257,8 @@ async def get_batch_report(
                     row.update({
                         "Student Name": student.get("name"),
                         "Student Email": student.get("email"),
+                        "Admin Grade": student.get("admin_grade", ""),
+                        "Admin Feedback": student.get("admin_feedback", ""),
                         "Mentor Grade": student.get("mentor_grade", ""),
                         "Mentor Feedback": student.get("mentor_feedback", "")
                     })
@@ -302,7 +309,7 @@ async def get_mentor_report(
     mentor = mentor_response.data[0]
     
     # Get mentor's assigned teams
-    query = supabase.table("teams").select("*, projects(*)").eq("mentor_id", mentorId)
+    query = supabase.table("teams").select("*, projects!projects_teams_fk(*)").eq("mentor_id", mentorId)
     
     if batchId:
         query = query.eq("batch_id", batchId)
@@ -349,7 +356,7 @@ async def get_mentor_report(
         
         teams_data.append({
             "teamId": team["id"],
-            "teamName": team["name"],
+            "teamName": team["team_name"],
             "batchId": team["batch_id"],
             "totalScore": total_score,
             "qualityScore": analysis_result.get("qualityScore", 0),
@@ -407,8 +414,8 @@ async def get_team_report(
     team = team_response.data[0]
     
     # Check authorization
-    role = current_user.get("role")
-    user_id = current_user.get("user_id")
+    role = current_user.role
+    user_id = str(current_user.user_id)
     
     if role != "admin" and team.get("mentor_id") != user_id:
         raise HTTPException(

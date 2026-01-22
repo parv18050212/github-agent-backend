@@ -141,6 +141,7 @@ class ProjectCRUD:
             if batch_id:
                 teams_query = teams_query.eq("batch_id", batch_id)
             if mentor_id:
+                # Filter by mentor_id column in teams table
                 teams_query = teams_query.eq("mentor_id", mentor_id)
             
             teams_result = teams_query.execute()

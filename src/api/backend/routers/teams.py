@@ -58,8 +58,8 @@ async def list_teams(
         *,
         batches!inner(id, name, semester, year),
         students(count),
-        projects(id, total_score, status, last_analyzed_at),
-        team_members:projects(team_members(count))
+        projects!projects_teams_fk(id, total_score, status, last_analyzed_at),
+        team_members:projects!projects_teams_fk(team_members(count))
         """,
         count="exact"
     )
@@ -67,7 +67,29 @@ async def list_teams(
     # Role-based filtering
     if current_user.role == "mentor":
         # Mentors only see their assigned teams
-        query = query.eq("mentor_id", str(current_user.user_id))
+        # USE mentor_team_assignments table instead of teams.mentor_id
+        print(f"[Teams API] Mentor detected: {current_user.user_id}")
+        assignments = supabase.table("mentor_team_assignments")\
+            .select("team_id")\
+            .eq("mentor_id", str(current_user.user_id))\
+            .execute()
+        
+        print(f"[Teams API] Assignments found: {len(assignments.data) if assignments.data else 0}")
+        print(f"[Teams API] Assignment data: {assignments.data}")
+        
+        assigned_team_ids = [a["team_id"] for a in assignments.data] if assignments.data else []
+        
+        print(f"[Teams API] Assigned team IDs: {assigned_team_ids}")
+        
+        # If no assignments, return empty match (impossible ID) or handle gracefully
+        if not assigned_team_ids:
+             # Return empty list equivalent
+             print("[Teams API] No assignments found, returning empty result")
+             query = query.eq("id", "00000000-0000-0000-0000-000000000000") # Dummy UUID
+        else:
+             print(f"[Teams API] Filtering to {len(assigned_team_ids)} assigned teams")
+             query = query.in_("id", assigned_team_ids)
+            
     else:
         # Admins: require either batch_id or mentor_id (for viewing mentor's teams)
         if mentor_id:
@@ -77,6 +99,8 @@ async def list_teams(
             # Admin viewing teams in a batch
             query = query.eq("batch_id", str(batch_id))
         else:
+            # If no filters provided, defaulting to empty or error?
+            # Existing logic raised 400.
             raise HTTPException(
                 status_code=400,
                 detail="batch_id or mentor_id is required for admin users"
@@ -95,8 +119,8 @@ async def list_teams(
     
     if search:
         query = query.or_(
-            f"team_name.ilike.%{search}%,"
-            f"projects.repo_url.ilike.%{search}%"
+            f"team_name.ilike.%{search}%,",
+            f"projects!projects_teams_fk.repo_url.ilike.%{search}%"
         )
     
     # Apply sorting (map frontend field names to database columns)
@@ -220,7 +244,7 @@ async def create_team(
         *,
         batches(id, name, semester, year),
         students(*),
-        projects(*)
+        projects!projects_teams_fk(*)
         """
     ).eq("id", team_id).execute()
     
@@ -764,7 +788,7 @@ async def update_team(
         *,
         batches(id, name, semester, year),
         students(*),
-        projects(*)
+        projects!projects_teams_fk(*)
         """
     ).eq("id", str(team_id)).execute()
     
@@ -903,10 +927,19 @@ async def update_student_grades(
     for grade in grades:
         try:
             update_data = {}
-            if grade.mentor_grade is not None:
-                update_data["mentor_grade"] = grade.mentor_grade
-            if grade.mentor_feedback is not None:
-                update_data["mentor_feedback"] = grade.mentor_feedback
+            if current_user.role == "admin":
+                # Admin grading
+                if grade.mentor_grade is not None:
+                    update_data["admin_grade"] = grade.mentor_grade
+                if grade.mentor_feedback is not None:
+                    update_data["admin_feedback"] = grade.mentor_feedback
+            else:
+                # Mentor grading
+                if grade.mentor_grade is not None:
+                    update_data["mentor_grade"] = grade.mentor_grade
+                if grade.mentor_feedback is not None:
+                    update_data["mentor_feedback"] = grade.mentor_feedback
+            
             
             if update_data:
                 supabase.table("students").update(update_data).eq("id", str(grade.student_id)).execute()
@@ -958,7 +991,7 @@ async def analyze_team(
     
     # Get team with project
     team_response = supabase.table("teams").select(
-        "*, projects(*)"
+        "*, projects!projects_teams_fk(*)"
     ).eq("id", str(team_id)).execute()
     
     if not team_response.data:

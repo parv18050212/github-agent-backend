@@ -402,7 +402,7 @@ async def trigger_batch_analysis(
         
         # Get all teams in this batch with projects
         teams_result = supabase.table("teams")\
-            .select("id, team_name, project_id, projects(id, repo_url, status)")\
+            .select("id, team_name, project_id, projects!projects_teams_fk(id, repo_url, status)")\
             .eq("batch_id", str(batch_id))\
             .execute()
         
