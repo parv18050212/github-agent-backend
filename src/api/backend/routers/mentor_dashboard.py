@@ -357,3 +357,75 @@ async def get_mentor_team_report(
         "healthStatus": team.get("health_status", "on_track"),
         "lastAnalyzedAt": project.get("created_at") if project else None
     }
+
+
+# Grading schemas
+from pydantic import BaseModel, Field
+
+class MentorStudentGradeInput(BaseModel):
+    """Input for grading a single student (mentor only)"""
+    student_id: str
+    mentor_grade: Optional[float] = Field(None, ge=0, le=100, description="Grade 0-100")
+    mentor_feedback: Optional[str] = None
+
+
+@router.put("/teams/{team_id}/grades")
+async def grade_team_students(
+    team_id: str = Path(..., description="Team ID"),
+    grades: List[MentorStudentGradeInput] = [],
+    current_user: AuthUser = Depends(require_mentor)
+):
+    """
+    Grade students in a team (Mentor only).
+    This endpoint is separate from admin grading to avoid conflicts.
+    Mentors can only grade students in teams assigned to them.
+    """
+    supabase = get_supabase()
+    mentor_id = str(current_user.user_id)
+    
+    # Verify mentor is assigned to this team
+    team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
+    
+    if team_id not in team_ids:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not assigned to this team"
+        )
+    
+    # Verify all students belong to this team
+    student_ids = [g.student_id for g in grades]
+    if student_ids:
+        students_check = supabase.table("students").select("id").eq("team_id", team_id).in_("id", student_ids).execute()
+        found_ids = {s["id"] for s in students_check.data}
+        if len(found_ids) != len(student_ids):
+            raise HTTPException(status_code=400, detail="One or more students do not belong to this team")
+    
+    # Update grades
+    updated_count = 0
+    errors = []
+    
+    for grade in grades:
+        try:
+            update_data = {}
+            if grade.mentor_grade is not None:
+                update_data["mentor_grade"] = grade.mentor_grade
+            if grade.mentor_feedback is not None:
+                update_data["mentor_feedback"] = grade.mentor_feedback
+            
+            if update_data:
+                supabase.table("students").update(update_data).eq("id", grade.student_id).execute()
+                updated_count += 1
+        except Exception as e:
+            errors.append(f"Failed to update student {grade.student_id}: {str(e)}")
+    
+    if errors:
+        return {
+            "success": False,
+            "message": f"Updated {updated_count} students with errors: {'; '.join(errors)}"
+        }
+    
+    return {
+        "success": True,
+        "message": f"Successfully graded {updated_count} students"
+    }
+
