@@ -86,3 +86,4 @@ Thumbs.db
 # Git
 .git/
 github-agent.pem
+reports/

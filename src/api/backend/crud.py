@@ -137,21 +137,33 @@ class ProjectCRUD:
         # Filter by batch or mentor if provided
         # Use teams.project_id to find projects (teams link TO projects, not vice versa)
         if batch_id or mentor_id:
+            project_ids = set()
+            
+            # Base teams query
             teams_query = supabase.table("teams").select("project_id")
             if batch_id:
                 teams_query = teams_query.eq("batch_id", batch_id)
+            
             if mentor_id:
-                # Filter by mentor_id column in teams table
-                teams_query = teams_query.eq("mentor_id", mentor_id)
+                # Use centralized logic for mentor team resolution
+                mentor_team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
+                # Need to map these team_ids to project_ids
+                if mentor_team_ids:
+                    t_res = supabase.table("teams").select("project_id").in_("id", mentor_team_ids).execute()
+                    if t_res.data:
+                        project_ids.update([t["project_id"] for t in t_res.data if t.get("project_id")])
+            else:
+                # Only batch_id filtering
+                r = teams_query.execute()
+                if r.data:
+                    project_ids.update([t["project_id"] for t in r.data if t.get("project_id")])
             
-            teams_result = teams_query.execute()
-            # Get project_ids from teams (filter out None values)
-            project_ids = [t["project_id"] for t in teams_result.data if t.get("project_id")] if teams_result.data else []
+            final_project_ids = list(project_ids)
             
-            if not project_ids:
-                return [], 0 # No teams match the filter or no projects linked
+            if not final_project_ids:
+                return [], 0 # No matching teams
             
-            query = query.in_("id", project_ids)
+            query = query.in_("id", final_project_ids)
         
         # Filter by status
         query = query.eq("status", status)
@@ -811,6 +823,33 @@ class TeamCRUD:
         supabase = get_supabase_client()
         result = supabase.table("team_memberships").select("*").eq("team_id", team_id).execute()
         return result.data or []
+
+    @staticmethod
+    def get_mentor_team_ids(mentor_id: str) -> List[str]:
+        """
+        Get all team IDs assigned to a mentor using hybrid strategy.
+        Checks both 'teams.mentor_id' (legacy) and 'mentor_team_assignments' (new).
+        """
+        supabase = get_supabase_client()
+        team_ids = set()
+        
+        # A. Check 'teams' table direct column
+        try:
+            t_direct = supabase.table("teams").select("id").eq("mentor_id", mentor_id).execute()
+            if t_direct.data:
+                team_ids.update([t["id"] for t in t_direct.data])
+        except Exception as e:
+            print(f"[TeamCRUD] Warning fetching direct mentor teams: {e}")
+
+        # B. Check 'mentor_team_assignments' junction table
+        try:
+            assignments = supabase.table("mentor_team_assignments").select("team_id").eq("mentor_id", str(mentor_id)).execute()
+            if assignments.data:
+                team_ids.update([a["team_id"] for a in assignments.data])
+        except Exception as e:
+            print(f"[TeamCRUD] Warning fetching mentor assignments: {e}")
+            
+        return list(team_ids)
 
 
 class ProjectCommentCRUD:

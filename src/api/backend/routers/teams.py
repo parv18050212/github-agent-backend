@@ -4,7 +4,7 @@ Handles all team CRUD operations and team-related endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime
 import csv
 import io
@@ -190,8 +190,11 @@ async def create_team(
     if not batch_response.data:
         raise HTTPException(status_code=404, detail="Batch not found")
     
+    common_id = str(uuid4())
+    
     # Create team
     team_insert = {
+        "id": common_id,
         "batch_id": str(team_data.batch_id),
         "team_name": team_data.name,
         "health_status": "on_track",
@@ -204,11 +207,12 @@ async def create_team(
         raise HTTPException(status_code=500, detail="Failed to create team")
     
     team = team_response.data[0]
-    team_id = team["id"]
+    team_id = team["id"] # Should be common_id
     
     # Create project if repo URL provided
     if team_data.repo_url:
         project_insert = {
+            "id": common_id,
             "team_id": team_id,
             "batch_id": str(team_data.batch_id),
             "repo_url": team_data.repo_url,
@@ -221,7 +225,7 @@ async def create_team(
         if project_response.data:
             # Update team with project_id
             supabase.table("teams").update({
-                "project_id": project_response.data[0]["id"]
+                "project_id": common_id
             }).eq("id", team_id).execute()
     
     # Create students
@@ -464,8 +468,12 @@ async def bulk_import_teams_with_mentors(
                      # Ignoring for now.
                      pass 
             
+            # Generate shared ID
+            common_id = str(uuid4())
+            
             # Create team
             team_insert = {
+                "id": common_id,
                 "batch_id": str(batch_id),
                 "team_name": display_team_name,
                 "repo_url": repo_url,
@@ -480,6 +488,7 @@ async def bulk_import_teams_with_mentors(
             
             # Create project
             project_insert = {
+                "id": common_id,
                 "team_id": team_id,
                 "batch_id": str(batch_id),
                 "repo_url": repo_url,
@@ -495,7 +504,7 @@ async def bulk_import_teams_with_mentors(
                 
                 # Update team with project_id
                 supabase.table("teams").update({
-                    "project_id": project_id
+                    "project_id": common_id
                 }).eq("id", team_id).execute()
                 
                 # Create team members linked to project AND STUDENTS linked to team
@@ -600,8 +609,12 @@ async def bulk_upload_teams(
                         "email": student_email
                     })
             
+            # Generate shared ID
+            common_id = str(uuid4())
+            
             # Create team
             team_insert = {
+                "id": common_id,
                 "batch_id": str(batch_id),
                 "team_name": team_name,
                 "health_status": "on_track",
@@ -615,6 +628,7 @@ async def bulk_upload_teams(
             # Create project if repo URL provided
             if repo_url:
                 project_insert = {
+                    "id": common_id,
                     "team_id": team_id,
                     "batch_id": str(batch_id),
                     "repo_url": repo_url,
@@ -626,7 +640,7 @@ async def bulk_upload_teams(
                 
                 if project_response.data:
                     supabase.table("teams").update({
-                        "project_id": project_response.data[0]["id"]
+                        "project_id": common_id
                     }).eq("id", team_id).execute()
             
             # Create students

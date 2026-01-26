@@ -26,7 +26,8 @@ from src.api.backend.routers import (
     dashboards,
     analytics,
     reports,
-    admin_users
+    admin_users,
+    mentor_dashboard
 )
 
 # Create FastAPI app
@@ -72,6 +73,7 @@ app.include_router(dashboards.router)  # Admin & Mentor dashboards (Phase 4)
 app.include_router(analytics.router)  # Team Analytics (Phase 5)
 app.include_router(reports.router)  # Reports & Analytics (Phase 5)
 app.include_router(admin_users.router)  # Admin User Management (Admin Portal)
+app.include_router(mentor_dashboard.router)  # Mentor Dashboard (Mentor-only endpoints)
 
 
 @app.get("/")

@@ -309,7 +309,33 @@ async def get_mentor_report(
     mentor = mentor_response.data[0]
     
     # Get mentor's assigned teams
-    query = supabase.table("teams").select("*, projects!projects_teams_fk(*)").eq("mentor_id", mentorId)
+    mentor_team_ids = []
+    
+    # 1. Get IDs using centralized logic
+    try:
+        from ..crud import TeamCRUD
+        mentor_team_ids = TeamCRUD.get_mentor_team_ids(mentorId)
+    except Exception as e:
+        print(f"[Reports] Error getting mentor teams: {e}")
+        
+    if not mentor_team_ids:
+        # If no teams assigned, return empty report
+        return {
+            "mentorId": mentorId,
+            "mentorName": mentor.get("full_name", ""),
+            "generatedAt": datetime.utcnow().isoformat(),
+            "teams": [],
+            "summary": {
+                "totalTeams": 0,
+                "averageScore": 0,
+                "teamsOnTrack": 0,
+                "teamsAtRisk": 0,
+                "teamsCritical": 0
+            }
+        }
+
+    # 2. Fetch full team data for these IDs
+    query = supabase.table("teams").select("*, projects!projects_teams_fk(*)").in_("id", mentor_team_ids)
     
     if batchId:
         query = query.eq("batch_id", batchId)
