@@ -216,6 +216,7 @@ class StudentUpdate(BaseModel):
     lines_added: Optional[int] = None
     lines_deleted: Optional[int] = None
     last_commit_date: Optional[datetime] = None
+    grading_details: Optional[Dict[str, Any]] = None
 
 
 class Student(StudentBase):
@@ -226,6 +227,7 @@ class Student(StudentBase):
     lines_added: int = 0
     lines_deleted: int = 0
     last_commit_date: Optional[datetime] = None
+    grading_details: Optional[Dict[str, Any]] = {}
     created_at: datetime
     updated_at: datetime
     

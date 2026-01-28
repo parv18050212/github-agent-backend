@@ -48,7 +48,7 @@ class AnalyzerService:
                 )
                 
                 if response.status_code != 200:
-                    print(f"      ⚠️  GitHub API Loopkup Failed: {response.status_code}")
+                    print(f"      ⚠️  GitHub API Lookup Failed: {response.status_code}")
                     return {}
                 
                 data = response.json()
@@ -131,7 +131,8 @@ class AnalyzerService:
                 pass
 
             # Fetch languages from GitHub API
-            gh_token = os.getenv("GH_API_KEY")
+            # Fetch languages from GitHub API
+            gh_token = os.getenv("GH_API_KEY") or os.getenv("GITHUB_TOKEN")
             if gh_token and repo_url:
                 try:
                     languages = AnalyzerService._fetch_github_languages(repo_url, gh_token)

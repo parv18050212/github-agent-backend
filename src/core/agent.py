@@ -258,11 +258,16 @@ def node_aggregator(ctx):
     # Use reasonable defaults (50 = neutral) instead of 0 when data is missing
     impl_score = judge.get("implementation_score", 50)  # 50 is neutral if AI fails
     
+    # Calculate Effort based on Relevance Score (capped at 100)
+    # Target: 50 relevance points = 100 score (approx 20 meaningful commits)
+    relevance = comm.get("total_relevance", 0)
+    effort_score = min(100, relevance * 2) 
+    
     scores = {
         "originality": max(0, 100 - top_ai),
         "quality": qual.get("maintainability_index", 50),  # 50 if no Python files
         "security": sec.get("score", 100),  # 100 if no scan done (assume safe)
-        "effort": min(100, comm.get("total_commits", 0) * 5),  # Scale commits (20 commits = 100)
+        "effort": effort_score,
         "implementation": impl_score,
         "engineering": mat.get("score", 20),  # 20 base even without devops
         "organization": struct.get("organization_score", 50),  # 50 if not analyzed
@@ -427,13 +432,15 @@ def save_csv_results(output_dir, team_name, data):
         "Tech_Stack": ", ".join(data.get("stack", [])),
         
         # --- SCORES (RENAMED) ---
+        # --- SCORES (RENAMED) ---
         "TOTAL_SCORE": round(sum([
-            scores.get('originality', 0) * 0.2,
-            scores.get('implementation', 0) * 0.3,
-            scores.get('engineering', 0) * 0.2,
-            scores.get('security', 0) * 0.1,
-            scores.get('quality', 0) * 0.1,
-            scores.get('organization', 0) * 0.1
+            scores.get('originality', 0) * 0.15,
+            scores.get('implementation', 0) * 0.25,
+            scores.get('engineering', 0) * 0.15,
+            scores.get('security', 0) * 0.10,
+            scores.get('quality', 0) * 0.10,
+            scores.get('organization', 0) * 0.05,
+            scores.get('effort', 0) * 0.20
         ]), 1),
         
         "Implementation": round(scores.get('implementation', 0), 1),
@@ -442,6 +449,8 @@ def save_csv_results(output_dir, team_name, data):
         "Code_Quality": round(scores.get('quality', 0), 1),
         "Security": round(scores.get('security', 0), 1),
         "Organization": round(scores.get('organization', 0), 1),
+        "Effort": round(scores.get('effort', 0), 1),
+        "Mean_Relevance": round(comm.get("total_relevance", 0) / max(1, comm.get("total_commits", 1)), 2),
 
         # --- AI FEEDBACK ---
         "AI_Pros": clean_text(judge.get("positive_feedback", "")),

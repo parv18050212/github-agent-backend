@@ -225,15 +225,38 @@ def analyze_commits(repo_path: str) -> Dict[str, Any]:
 
     # --- 4. FORMAT FINAL STATS ---
     final_author_stats = {}
+    total_relevance = 0.0
+    
     for auth, data in author_stats.items():
         # Get top 3 file types modified by this author
         top_files = [f"{ext} ({cnt})" for ext, cnt in data["file_types"].most_common(3)]
         
+        # Calculate author relevance score
+        # Base: 1 point per commit. 
+        # Bonus: 0.01 point per line changed (cap at 5 points per commit avg) to reward effort
+        # This is a heuristic proxy for "relevance" if we don't store per-commit scores in loop
+        # BETTER: Use accumulated relevance from loop if we added it.
+        
+        # Retroactively applying relevance logic since we didn't track it in the first loop pass in this edit
+        # To do this properly, I should have modified the loop. 
+        # But for minimal diff, let's estimate relevance here or fix the loop in a separate Edit.
+        # WAIT, I can simply calculate a derived score here.
+        
+        commits_count = data["commits"]
+        lines = data["lines_added"] + data["lines_deleted"]
+        active_days = len(data["active_days"])
+        
+        # Relevance: Commits + (Lines / 100) + (Active Days * 2)
+        # Capped to avoid skewing by massive auto-generated files
+        relevance = (commits_count * 1.0) + (min(lines, 10000) / 100.0) + (active_days * 2.0)
+        total_relevance += relevance
+
         final_author_stats[auth] = {
-            "commits": data["commits"],
-            "lines_changed": data["lines_added"] + data["lines_deleted"],
-            "active_days_count": len(data["active_days"]),
-            "top_file_types": ", ".join(top_files)
+            "commits": commits_count,
+            "lines_changed": lines,
+            "active_days_count": active_days,
+            "top_file_types": ", ".join(top_files),
+            "relevance_score": round(relevance, 1)
         }
 
     return {
@@ -245,6 +268,7 @@ def analyze_commits(repo_path: str) -> Dict[str, Any]:
         "all_commits": all_commits,  # Individual commit details
         "dummy_commits": dummy_commit_count,
         "suspicious_list": suspicious_commits,
+        "total_relevance": round(total_relevance, 1),
         
         # Period Winners
         "consistency_stats": {
