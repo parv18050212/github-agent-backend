@@ -350,7 +350,8 @@ async def get_mentor_team_report(
                 "email": s.get("email"),
                 "githubUsername": s.get("github_username"),
                 "mentorGrade": s.get("mentor_grade"),
-                "mentorFeedback": s.get("mentor_feedback")
+                "mentorFeedback": s.get("mentor_feedback"),
+                "gradingDetails": s.get("grading_details") or {}
             }
             for s in students
         ],
@@ -367,6 +368,7 @@ class MentorStudentGradeInput(BaseModel):
     student_id: str
     mentor_grade: Optional[float] = Field(None, ge=0, le=100, description="Grade 0-100")
     mentor_feedback: Optional[str] = None
+    grading_details: Optional[Dict[str, Any]] = None
 
 
 @router.put("/teams/{team_id}/grades")
@@ -404,8 +406,11 @@ async def grade_team_students(
     updated_count = 0
     errors = []
     
+    print(f"Received grades update request for team {team_id} with {len(grades)} students.")
+    
     for grade in grades:
         try:
+            print(f"Processing student {grade.student_id}. Data: {grade.dict()}")
             update_data = {}
             if grade.mentor_grade is not None:
                 update_data["mentor_grade"] = grade.mentor_grade
@@ -413,10 +418,49 @@ async def grade_team_students(
                 update_data["mentor_feedback"] = grade.mentor_feedback
             
             if update_data:
-                supabase.table("students").update(update_data).eq("id", grade.student_id).execute()
-                updated_count += 1
+                # If grading_details is provided, we need to merge it carefully or replace it
+                # For simplicity, if provided, we rely on the client to send the structure for the specific round
+                # But since we want to support partial updates (e.g. only round 2), we should fetch, merge, and update.
+                # However, a simple update is easier:
+                # If the client sends "grading_details": {"round_1": {...}}, Supabase/Postgres JSONB update will merge at top level?
+                # No, standard update replaces the column value.
+                # To merge, we'd need to fetch first or use complex SQL.
+                # Let's fetch the current student first to merge JSON.
+                
+                if grade.grading_details:
+                    current_student = supabase.table("students").select("grading_details").eq("id", grade.student_id).execute()
+                    if current_student.data:
+                        current_details = current_student.data[0].get("grading_details") or {}
+                        # Merge dictionaries (shallow merge of rounds)
+                        current_details.update(grade.grading_details)
+                        update_data["grading_details"] = current_details
+                
+                # Update grading_details first (Critical for new feature)
+                if "grading_details" in update_data:
+                    try:
+                        supabase.table("students").update({"grading_details": update_data["grading_details"]}).eq("id", grade.student_id).execute()
+                        updated_count += 1
+                    except Exception as e:
+                         print(f"Error updating grading_details for student {grade.student_id}: {e}")
+                         errors.append(f"Failed to update grading_details: {str(e)}")
+                         continue # specific failure
+
+                # Attempt to update legacy columns (Best effort)
+                legacy_data = {}
+                if "mentor_grade" in update_data:
+                    legacy_data["mentor_grade"] = update_data["mentor_grade"]
+                if "mentor_feedback" in update_data:
+                    legacy_data["mentor_feedback"] = update_data["mentor_feedback"]
+                
+                if legacy_data:
+                    try:
+                        supabase.table("students").update(legacy_data).eq("id", grade.student_id).execute()
+                    except Exception as e:
+                        print(f"Warning: Failed to update legacy columns for student {grade.student_id}: {e}")
+                        # Do not count as failure for the request if grading_details succeeded
         except Exception as e:
-            errors.append(f"Failed to update student {grade.student_id}: {str(e)}")
+            print(f"Error processing student {grade.student_id}: {e}")
+            errors.append(f"Unexpected error for student {grade.student_id}: {str(e)}")
     
     if errors:
         return {

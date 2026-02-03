@@ -138,7 +138,7 @@ async def get_admin_dashboard(
         
         mentor_workload.append({
             "mentorId": mentor_id,
-            "mentorName": mentor["full_name"],
+            "mentorName": mentor.get("full_name") or "Unknown Mentor",
             "assignedTeams": assigned_teams,
             "onTrack": on_track,
             "atRisk": at_risk
