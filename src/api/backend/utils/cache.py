@@ -46,7 +46,7 @@ class RedisCache:
             return
         
         try:
-            # Create connection pool for efficiency
+            # Create connection pool for efficiency (production-ready)
             self._client = redis.from_url(
                 redis_url,
                 decode_responses=True,
@@ -55,7 +55,9 @@ class RedisCache:
                 socket_keepalive=True,
                 socket_keepalive_options={},
                 health_check_interval=30,
-                max_connections=10,
+                max_connections=25,  # Increased for production load (was 10)
+                retry_on_timeout=True,
+                retry_on_error=[ConnectionError, TimeoutError],
                 # SSL configuration for rediss:// URLs
                 ssl_cert_reqs=None if redis_url.startswith("rediss://") else None
             )

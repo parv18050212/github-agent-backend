@@ -149,20 +149,39 @@ async def list_teams(
     if current_user.role == "mentor":
         print(f"[Teams API] Mentor filter applied with mentor_id: {current_user.user_id}")
 
+    # OPTIMIZED: Batch fetch mentor names (was: fetching after teams query)
+    # Use cache to avoid repeated mentor queries
+    from src.api.backend.utils.cache import cache, RedisCache
+    
     mentor_ids = {str(team.get("mentor_id")) for team in teams if team.get("mentor_id")}
-    mentor_lookup = {}
-
+    
     if mentor_ids:
-        admin_supabase = get_supabase_admin_client()
-        mentor_response = admin_supabase.table("users").select("id, full_name, email").in_(
-            "id", list(mentor_ids)
-        ).execute()
-        for mentor in mentor_response.data or []:
-            mentor_lookup[str(mentor.get("id"))] = mentor.get("full_name") or mentor.get("email")
-
-    for team in teams:
-        mentor_id = team.get("mentor_id")
-        team["mentor_name"] = mentor_lookup.get(str(mentor_id)) if mentor_id else None
+        # Try cache first (mentors change rarely)
+        cache_key = "hackeval:mentors:lookup"
+        mentor_lookup = cache.get(cache_key)
+        
+        if not mentor_lookup:
+            # Cache miss - fetch all mentors and cache
+            admin_supabase = get_supabase_admin_client()
+            all_mentors = admin_supabase.table("users").select(
+                "id, full_name, email"
+            ).eq("role", "mentor").execute()
+            
+            mentor_lookup = {
+                str(m["id"]): m.get("full_name") or m.get("email") 
+                for m in all_mentors.data or []
+            }
+            # Cache for 1 hour (mentors don't change often)
+            cache.set(cache_key, mentor_lookup, RedisCache.TTL_LONG)
+        
+        # Assign mentor names to teams
+        for team in teams:
+            mentor_id = str(team.get("mentor_id")) if team.get("mentor_id") else None
+            team["mentor_name"] = mentor_lookup.get(mentor_id) if mentor_id else None
+    else:
+        # No mentors to look up
+        for team in teams:
+            team["mentor_name"] = None
     
     return TeamListResponse(
         teams=teams,

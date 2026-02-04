@@ -75,6 +75,11 @@ app.include_router(reports.router)  # Reports & Analytics (Phase 5)
 app.include_router(admin_users.router)  # Admin User Management (Admin Portal)
 app.include_router(mentor_dashboard.router)  # Mentor Dashboard (Mentor-only endpoints)
 
+# Real-time Celery sync and historical data tracking
+from src.api.backend.routers import analysis_status, analysis_history
+app.include_router(analysis_status.router)  # Real-time job status with WebSocket
+app.include_router(analysis_history.router)  # Historical snapshots for 7-day tracking
+
 
 @app.get("/")
 async def root():

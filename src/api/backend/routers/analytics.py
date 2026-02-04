@@ -168,7 +168,19 @@ async def get_team_analytics(
     """
     Get comprehensive analytics for a team.
     Admin or assigned mentor only.
+    OPTIMIZED: Added caching for 5-minute TTL.
     """
+    from ..utils.cache import cache, RedisCache
+    
+    # Check cache first (analytics are expensive to compute)
+    cache_key = f"hackeval:analytics:{teamId}"
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        print(f"[Analytics] Cache HIT for team {teamId}")
+        return cached_result
+    
+    print(f"[Analytics] Cache MISS for team {teamId}, computing...")
+    
     supabase = get_supabase_admin_client()
     
     # Verify access
@@ -549,7 +561,7 @@ async def get_team_analytics(
         for flag in risk_flags
     ]
 
-    return {
+    result = {
         "teamId": teamId,
         "teamName": team["team_name"],
         "batchId": team["batch_id"],
@@ -605,6 +617,12 @@ async def get_team_analytics(
         "warnings": warnings,
         "languageBreakdown": language_breakdown
     }
+    
+    # Cache result for 5 minutes (balances freshness with performance)
+    cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
+    print(f"[Analytics] Cached result for team {teamId}")
+    
+    return result
 
 
 @router.get("/{teamId}/commits", response_model=TeamCommitsResponse)

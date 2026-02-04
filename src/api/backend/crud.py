@@ -130,9 +130,16 @@ class ProjectCRUD:
         mentor_id: Optional[str] = None
     ) -> tuple[List[Dict[str, Any]], int]:
         """Get ranked projects leaderboard with optional batch and mentor filtering"""
+        from src.api.backend.utils.cache import cache, RedisCache
+        
         supabase = get_supabase_client()
         
-        query = supabase.table("projects").select("*", count="exact")
+        # Build count cache key
+        count_cache_key = f"hackeval:leaderboard:count:{batch_id or 'all'}:{status}:{mentor_id or 'all'}"
+        total = cache.get(count_cache_key)
+        
+        # Query without count for data (faster)
+        query = supabase.table("projects").select("*")
         
         # Filter by batch or mentor if provided
         # Use teams.project_id to find projects (teams link TO projects, not vice versa)
@@ -180,7 +187,23 @@ class ProjectCRUD:
         query = query.range(start, end).order(sort_by, desc=desc)
         
         result = query.execute()
-        total = result.count if hasattr(result, 'count') else len(result.data)
+        
+        # If count not cached, run separate count query and cache it
+        if total is None:
+            count_query = supabase.table("projects").select("id", count="exact")
+            
+            # Apply same filters for count
+            if batch_id or mentor_id:
+                if final_project_ids:
+                    count_query = count_query.in_("id", final_project_ids)
+            count_query = count_query.eq("status", status)
+            count_query = count_query.not_.is_("total_score", "null")
+            
+            count_result = count_query.execute()
+            total = count_result.count if hasattr(count_result, 'count') else 0
+            
+            # Cache count for 30 seconds (balances freshness with performance)
+            cache.set(count_cache_key, total, RedisCache.TTL_SHORT)
         
         # Add rank
         ranked_data = []

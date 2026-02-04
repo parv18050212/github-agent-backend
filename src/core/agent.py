@@ -125,13 +125,28 @@ def node_forensic_analysis(ctx):
         if len(content) > 100: 
             file_contents[f] = {"content": content, "tokens": content.split()}
 
-    # LLM Detection (Top 15 files)
+    # LLM Detection (Top 15 files) - OPTIMIZED: Parallel processing
+    import concurrent.futures
+    
     llm_results = {}
     target_files = sorted(file_contents.keys(), key=lambda k: len(file_contents[k]["content"]), reverse=True)[:15]
-    for f in target_files:
-        doc = file_contents[f]
-        res = llm_origin_ensemble(doc, providers=providers)
-        llm_results[f] = res["score"]
+    
+    def analyze_file_llm(file_path):
+        # \"\"\"Analyze single file for LLM-generated code\"\"\"
+        try:
+            doc = file_contents[file_path]
+            res = llm_origin_ensemble(doc, providers=providers)
+            return file_path, res["score"]
+        except Exception as e:
+            print(f"      ⚠️  LLM analysis failed for {file_path}: {e}")
+            return file_path, 0.0
+    
+    # Process up to 5 files in parallel (balance speed vs API rate limits)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(analyze_file_llm, f): f for f in target_files}
+        for future in concurrent.futures.as_completed(futures):
+            file_path, score = future.result()
+            llm_results[file_path] = score
 
     # Internal Plagiarism (Top 20 files)
     plag_results = {}

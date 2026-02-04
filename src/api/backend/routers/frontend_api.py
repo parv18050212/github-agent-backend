@@ -44,13 +44,15 @@ async def get_project_detail(project_id: str):
             project, tech_stack, issues, team_members, report_json
         )
         
-        # Cache for 5 minutes (completed projects change rarely)
+    # Cache with status-appropriate TTL
         if project.get("status") == "completed":
-            cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
-        
-        return result
-        
-    except HTTPException:
+        # Completed projects rarely change - cache for 5 minutes
+         cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
+        elif project.get("status") in ["pending", "processing"]:
+        # Processing projects change frequently - cache for 30 seconds to reduce rapid refreshes
+         cache.set(cache_key, result, RedisCache.TTL_SHORT)
+        elif project.get("status") == "failed":
+        # Failed projects don't change - cache for 5 minutes
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

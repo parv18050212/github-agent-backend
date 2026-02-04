@@ -10,6 +10,7 @@ import traceback
 import time
 from typing import List, Dict
 from datetime import datetime
+import json
 
 from src.api.backend.services.analyzer_service import AnalyzerService
 from src.api.backend.crud import AnalysisJobCRUD, BatchCRUD
@@ -18,6 +19,80 @@ from src.api.backend.database import get_supabase_admin_client
 import subprocess
 
 logger = get_task_logger(__name__)
+
+
+def create_snapshot_from_project(team_id: str, project_id: str, run_number: int, batch_run_id: str):
+    """
+    Create analysis snapshot from project for historical tracking
+    Called after each successful analysis to preserve state for 7-day comparisons
+    
+    Args:
+        team_id: UUID of team
+        project_id: UUID of project that was analyzed
+        run_number: Analysis run number (1, 2, 3, etc.)
+        batch_run_id: UUID of batch_analysis_run
+    """
+    try:
+        supabase = get_supabase_admin_client()
+        
+        # Get current project state
+        project = supabase.table('projects').select(
+            'report_json, github_url, team_id, batch_id'
+        ).eq('id', project_id).execute()
+        
+        if not project.data:
+            logger.warning(f"Project {project_id} not found for snapshot")
+            return
+        
+        project_data = project.data[0]
+        report_json = project_data.get('report_json')
+        
+        # Parse report if string
+        if isinstance(report_json, str):
+            try:
+                report_json = json.loads(report_json)
+            except:
+                logger.warning(f"Failed to parse report_json for snapshot")
+                report_json = {}
+        
+        # Extract scores from report
+        scores = {
+            'quality_score': report_json.get('quality', {}).get('score', 0),
+            'security_score': report_json.get('security', {}).get('score', 0),
+            'architecture_score': report_json.get('architecture', {}).get('score', 0),
+            'documentation_score': report_json.get('documentation', {}).get('score', 0),
+            'originality_score': report_json.get('originality', {}).get('score', 0),
+            'total_score': report_json.get('final_scores', {}).get('total_score', 0)
+        }
+        
+        # Create snapshot
+        snapshot_data = {
+            'team_id': team_id,
+            'batch_run_id': batch_run_id,
+            'run_number': run_number,
+            'analysis_date': datetime.utcnow().isoformat(),
+            'github_url': project_data.get('github_url'),
+            'quality_score': scores['quality_score'],
+            'security_score': scores['security_score'],
+            'architecture_score': scores['architecture_score'],
+            'documentation_score': scores['documentation_score'],
+            'originality_score': scores['originality_score'],
+            'total_score': scores['total_score'],
+            'metadata': {
+                'project_id': project_id,
+                'batch_id': project_data.get('batch_id'),
+                'report_snapshot': report_json,  # Full report for detailed comparisons
+                'created_by': 'celery_worker',
+                'snapshot_type': 'automatic'
+            }
+        }
+        
+        supabase.table('analysis_snapshots').insert(snapshot_data).execute()
+        logger.info(f"✅ Snapshot created: team={team_id}, run={run_number}")
+        
+    except Exception as e:
+        logger.error(f"Failed to create snapshot: {e}")
+        logger.error(traceback.format_exc())
 
 
 class CallbackTask(Task):
@@ -91,6 +166,32 @@ def analyze_repository_task(
             repo_url=repo_url,
             team_name=team_name
         )
+        
+        # CREATE SNAPSHOT after successful analysis (for 7-day tracking)
+        try:
+            # Get project and team info
+            project = supabase.table('projects').select('team_id, batch_id').eq('id', project_id).execute()
+            if project.data:
+                team_id = project.data[0].get('team_id')
+                batch_id = project.data[0].get('batch_id')
+                
+                # Get metadata for run tracking
+                job_metadata = supabase.table('analysis_jobs').select('run_number, batch_id').eq('id', job_id).execute()
+                run_number = job_metadata.data[0].get('run_number') if job_metadata.data else None
+                batch_run_id = job_metadata.data[0].get('metadata', {}).get('batch_run_id') if job_metadata.data else None
+                
+                # Create snapshot if we have run tracking info
+                if team_id and run_number and batch_run_id:
+                    create_snapshot_from_project(
+                        team_id=team_id,
+                        project_id=project_id,
+                        run_number=run_number,
+                        batch_run_id=batch_run_id
+                    )
+                    logger.info(f"📸 Snapshot created for team {team_id}, run {run_number}")
+        except Exception as e:
+            # Don't fail the job if snapshot creation fails
+            logger.warning(f"⚠️ Failed to create snapshot: {e}")
         
         logger.info(f"✅ Analysis completed for {team_name or repo_url}")
         return {

@@ -119,33 +119,52 @@ async def get_admin_dashboard(
     recent_activity.sort(key=lambda x: x["timestamp"], reverse=True)
     recent_activity = recent_activity[:10]
     
-    # Get mentor workload
+    # Get mentor workload (OPTIMIZED: Single batch query instead of N queries)
     admin_supabase = get_supabase_admin_client()
     mentor_workload = []
-    for mentor_id in unique_mentors:
-        # Get mentor info
-        mentor_response = admin_supabase.table("users").select("id, full_name").eq("id", mentor_id).execute()
-        if not mentor_response.data:
-            continue
-        
-        mentor = mentor_response.data[0]
-        
-        # Get mentor's teams
-        mentor_teams = [t for t in teams if t.get("mentor_id") == mentor_id]
-        assigned_teams = len(mentor_teams)
-        on_track = len([t for t in mentor_teams if t.get("health_status") == "on_track"])
-        at_risk = len([t for t in mentor_teams if t.get("health_status") == "at_risk"])
-        
-        mentor_workload.append({
-            "mentorId": mentor_id,
-            "mentorName": mentor.get("full_name") or "Unknown Mentor",
-            "assignedTeams": assigned_teams,
-            "onTrack": on_track,
-            "atRisk": at_risk
-        })
     
-    # Sort by assigned teams descending
-    mentor_workload.sort(key=lambda x: x["assignedTeams"], reverse=True)
+    if unique_mentors:
+        # Batch fetch all mentors in one query (was: N separate queries)
+        mentor_response = admin_supabase.table("users").select(
+            "id, full_name, email"
+        ).in_("id", list(unique_mentors)).execute()
+        
+        # Build lookup dictionary
+        mentor_lookup = {str(m["id"]): m for m in mentor_response.data or []}
+        
+        # Pre-aggregate team stats per mentor (in-memory, but faster than N queries)
+        mentor_stats = {}
+        for team in teams:
+            mid = str(team.get("mentor_id"))
+            if not mid or mid not in unique_mentors:
+                continue
+            
+            if mid not in mentor_stats:
+                mentor_stats[mid] = {"assigned": 0, "on_track": 0, "at_risk": 0}
+            
+            mentor_stats[mid]["assigned"] += 1
+            health = team.get("health_status")
+            if health == "on_track":
+                mentor_stats[mid]["on_track"] += 1
+            elif health == "at_risk":
+                mentor_stats[mid]["at_risk"] += 1
+        
+        # Build workload array from aggregated stats
+        for mentor_id, stats in mentor_stats.items():
+            mentor = mentor_lookup.get(mentor_id)
+            if not mentor:
+                continue
+            
+            mentor_workload.append({
+                "mentorId": mentor_id,
+                "mentorName": mentor.get("full_name") or mentor.get("email") or "Unknown Mentor",
+                "assignedTeams": stats["assigned"],
+                "onTrack": stats["on_track"],
+                "atRisk": stats["at_risk"]
+            })
+        
+        # Sort by assigned teams descending
+        mentor_workload.sort(key=lambda x: x["assignedTeams"], reverse=True)
     
     return {
         "batchId": batchId,
