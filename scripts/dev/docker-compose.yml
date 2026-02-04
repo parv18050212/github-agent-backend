@@ -1,7 +1,9 @@
 services:
   # FastAPI Application
   api:
-    build: .
+    build:
+      context: ../..
+      dockerfile: Dockerfile
     container_name: github-agent-api
     ports:
       - "8000:8000"
@@ -23,14 +25,14 @@ services:
       - ADMIN_EMAILS=${ADMIN_EMAILS}
       - CORS_ORIGINS=${CORS_ORIGINS}
     env_file:
-      - .env
+      - ../../.env
     volumes:
       # Mount source code for hot-reload
-      - ./src:/app/src
-      - ./celery_worker.py:/app/celery_worker.py
-      - ./celery_app.py:/app/celery_app.py
-      - ./reports:/app/reports
-      - ./logs:/app/logs
+      - ../../src:/app/src
+      - ../../celery_worker.py:/app/celery_worker.py
+      - ../../celery_app.py:/app/celery_app.py
+      - ../../reports:/app/reports
+      - ../../logs:/app/logs
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     networks:
       - app-network
@@ -38,7 +40,9 @@ services:
 
   # Celery Worker
   celery_worker:
-    build: .
+    build:
+      context: ../..
+      dockerfile: Dockerfile
     container_name: github-agent-celery-worker
     environment:
       - APP_ENV=development
@@ -56,13 +60,13 @@ services:
       - COPYLEAKS_AUTH_URL=${COPYLEAKS_AUTH_URL}
       - COPYLEAKS_AI_DETECT_URL=${COPYLEAKS_AI_DETECT_URL}
     env_file:
-      - .env
+      - ../../.env
     volumes:
-      - ./src:/app/src
-      - ./celery_worker.py:/app/celery_worker.py
-      - ./celery_app.py:/app/celery_app.py
-      - ./reports:/app/reports
-      - ./logs:/app/logs
+      - ../../src:/app/src
+      - ../../celery_worker.py:/app/celery_worker.py
+      - ../../celery_app.py:/app/celery_app.py
+      - ../../reports:/app/reports
+      - ../../logs:/app/logs
     command: celery -A celery_app worker --loglevel=info -Q analysis,batch,dlq,default --concurrency=2
     depends_on:
       - api
@@ -72,7 +76,9 @@ services:
 
   # Celery Beat (Scheduler)
   celery_beat:
-    build: .
+    build:
+      context: ../..
+      dockerfile: Dockerfile
     container_name: github-agent-celery-beat
     environment:
       - APP_ENV=development
@@ -81,10 +87,10 @@ services:
       - SUPABASE_KEY=${SUPABASE_KEY}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
     env_file:
-      - .env
+      - ../../.env
     volumes:
-      - ./src:/app/src
-      - ./logs:/app/logs
+      - ../../src:/app/src
+      - ../../logs:/app/logs
     command: celery -A celery_app beat --loglevel=info
     depends_on:
       - celery_worker
@@ -94,3 +100,4 @@ services:
 
 networks:
   app-network:
+    driver: bridge

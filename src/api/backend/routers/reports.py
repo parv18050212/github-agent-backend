@@ -16,6 +16,7 @@ from ..schemas import (
     MentorReportResponse,
     TeamReportResponse
 )
+from ..utils.cache import cache, RedisCache
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -34,6 +35,13 @@ async def get_batch_report(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
+    # Check cache first (skip for CSV/PDF exports)
+    if format == "json":
+        cache_key = f"hackeval:report:batch:{batchId}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
+    
     supabase = get_supabase()
     
     # Verify batch exists
@@ -43,9 +51,9 @@ async def get_batch_report(
     
     batch = batch_response.data[0]
     
-    # Get all teams in the batch with their project data
+    # Get all teams in the batch with their project data AND students (single query)
     teams_response = supabase.table("teams").select(
-        "*, projects!projects_teams_fk(*)"
+        "*, projects!projects_teams_fk(*), students(*)"
     ).eq("batch_id", batchId).execute()
     
     teams = teams_response.data or []
@@ -210,19 +218,17 @@ async def get_batch_report(
         
         writer.writeheader()
         
-        # We need to fetch students for each team to do a detailed export
-        # Or we can do a summary export if include_details is False (but user asked for grading export)
-        # We will iterate through teams, then students.
+        # Build a map of team_id -> students for O(1) lookup (already fetched in teams query)
+        team_students_map = {}
+        for team in teams:
+            team_id = team.get("id")
+            students = team.get("students", [])
+            team_students_map[team_id] = students if isinstance(students, list) else []
         
         for team in teams_data:
-            # Re-fetch team with students since teams_data is a summary list
-            team_id = team.get("teamId") # teams_data uses teamId
-            if not team_id: # Fallback if using raw team object keys
-                 team_id = team.get("id")
-
-            # Efficiently fetch students for this team
-            students_response = supabase.table("students").select("*").eq("team_id", team_id).execute()
-            students = students_response.data or []
+            # Use pre-fetched students from the map (no additional queries!)
+            team_id = team.get("teamId")
+            students = team_students_map.get(team_id, [])
             
             base_row = {
                 "Rank": team.get("rank"),
@@ -268,6 +274,10 @@ async def get_batch_report(
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"batch_report_{batchId}_{timestamp}.csv"
+    # Cache the JSON response for 2 minutes
+    if format == "json":
+        cache.set(f"hackeval:report:batch:{batchId}", report, RedisCache.TTL_SHORT)
+    
         
         return StreamingResponse(
             iter([output.getvalue()]),
@@ -298,6 +308,13 @@ async def get_mentor_report(
             status_code=403,
             detail="You can only access your own reports"
         )
+    
+    # Check cache first (skip for PDF exports)
+    if format == "json":
+        cache_key = f"hackeval:report:mentor:{mentorId}:{batchId or 'all'}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
     
     supabase = get_supabase()
     
@@ -334,8 +351,8 @@ async def get_mentor_report(
             }
         }
 
-    # 2. Fetch full team data for these IDs
-    query = supabase.table("teams").select("*, projects!projects_teams_fk(*)").in_("id", mentor_team_ids)
+    # 2. Fetch full team data for these IDs (include students in single query)
+    query = supabase.table("teams").select("*, projects!projects_teams_fk(*), students(*)").in_("id", mentor_team_ids)
     
     if batchId:
         query = query.eq("batch_id", batchId)
@@ -417,6 +434,10 @@ async def get_mentor_report(
             }
         )
     
+    # Cache the JSON response for 2 minutes
+    if format == "json":
+        cache.set(f"hackeval:report:mentor:{mentorId}:{batchId or 'all'}", report, RedisCache.TTL_SHORT)
+    
     return report
 
 
@@ -430,10 +451,17 @@ async def get_team_report(
     Generate detailed team report.
     Admin or assigned mentor only.
     """
+    # Check cache first (skip for PDF exports)
+    if format == "json":
+        cache_key = f"hackeval:report:team:{teamId}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
+    
     supabase = get_supabase()
     
-    # Get team
-    team_response = supabase.table("teams").select("*").eq("id", teamId).execute()
+    # Get team with project data in single query
+    team_response = supabase.table("teams").select("*, projects!projects_teams_fk(*)").eq("id", teamId).execute()
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
     
@@ -450,9 +478,14 @@ async def get_team_report(
         )
     
     # Get project analysis
-    project_id = team.get("project_id")
+    project = None
+    if team.get("projects"):
+        if isinstance(team["projects"], list):
+            project = team["projects"][0] if team["projects"] else None
+        else:
+            project = team["projects"]
     
-    if not project_id:
+    if not project:
         # Return basic team info if not analyzed
         return {
             "teamId": teamId,
@@ -484,13 +517,7 @@ async def get_team_report(
             "lastAnalyzedAt": None
         }
     
-    # Get project data
-    project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
-    
-    if not project_response.data:
-        raise HTTPException(status_code=404, detail="Project analysis not found")
-    
-    project = project_response.data[0]
+    # Project data already fetched in single query above
     analysis_result = project.get("analysis_result", {})
     
     if isinstance(analysis_result, str):
@@ -560,5 +587,17 @@ async def get_team_report(
                 "data": report
             }
         )
+    
+    # Cache the JSON response for 2 minutes
+    if format == "json":
+        cache.set(f"hackeval:report:team:{teamId}", report, RedisCache.TTL_SHORT)
+    
+    return report
+            }
+        )
+    
+    # Cache the JSON response for 2 minutes
+    if format == "json":
+        cache.set(f"hackeval:report:team:{teamId}", report, RedisCache.TTL_SHORT)
     
     return report

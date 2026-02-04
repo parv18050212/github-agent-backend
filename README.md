@@ -1,277 +1,216 @@
-# Repository Analyzer
+# HackEval Backend
 
-AI-powered GitHub repository analysis and scoring system with automated quality, security, and originality assessment.
+AI-powered GitHub repository analysis system for hackathon evaluation.
 
-## 🚀 Features
-
-- **Automated Analysis** - Submit any GitHub repository for comprehensive evaluation
-- **Multi-Dimensional Scoring** - Quality, Security, Originality, Architecture, Documentation
-- **AI Detection** - Identify AI-generated code using advanced pattern matching
-- **Security Scanning** - Detect secrets, vulnerabilities, and security issues
-- **Commit Forensics** - Analyze contribution patterns and detect suspicious activity
-- **Tech Stack Detection** - Automatic identification of languages, frameworks, and tools
-- **REST API** - Complete API with frontend-compatible camelCase responses
-- **Real-time Progress** - Track analysis progress with live status updates
-- **Leaderboard** - Compare projects and view rankings
-
-## 📊 Tech Stack
-
-- **Backend**: FastAPI (Python 3.12)
-- **Database**: Supabase (PostgreSQL)
-- **AI**: OpenAI GPT-4, LangGraph orchestration
-- **Deployment**: Docker, AWS EC2, GitHub Actions
-- **Testing**: Pytest (79 unit tests, 100% passing)
-
-## 🔧 Quick Start
-
-### Prerequisites
-
-- Python 3.12+
-- Docker & Docker Compose
-- Supabase account
-- OpenAI API key
-
-### Local Development
+## 🚀 Quick Start
 
 ```bash
-# Clone repository
-git clone https://github.com/YOUR_USERNAME/repo-analyzer.git
-cd repo-analyzer
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.production .env
-# Edit .env with your credentials
-
-# Run server
+# Development
 python main.py
+
+# With Celery worker
+python -m celery -A celery_app worker --loglevel=info
+
+# Run tests
+pytest tests/
 ```
 
-Visit `http://localhost:8000/docs` for interactive API documentation.
+## 📁 Project Structure
 
-### Docker Deployment
+```
+proj-github agent/
+├── main.py                 # FastAPI application entry point
+├── celery_app.py          # Celery configuration
+├── celery_worker.py       # Background analysis workers
+├── Dockerfile             # Docker container definition
+│
+├── src/                   # Source code
+│   ├── api/              # API layer
+│   │   └── backend/      # Backend API implementation
+│   │       ├── routers/  # FastAPI route handlers
+│   │       ├── crud.py   # Database operations
+│   │       ├── schemas.py # Pydantic models
+│   │       └── utils/    # Utilities (cache, health)
+│   │
+│   ├── core/             # Core business logic
+│   │   ├── agent.py      # Main analysis orchestrator
+│   │   └── analyzer_service.py # Analysis service
+│   │
+│   ├── detectors/        # Analysis detectors
+│   │   ├── quality_metrics.py
+│   │   ├── security_scanner.py
+│   │   ├── ai_detector.py
+│   │   └── plagiarism_detector.py
+│   │
+│   └── orchestrator/     # Analysis pipeline
+│       └── runner.py
+│
+├── tests/                # Test suite
+│   ├── integration/      # Integration tests
+│   └── unit/            # Unit tests (if any)
+│
+├── scripts/             # Utility scripts
+│   ├── admin/          # Admin maintenance scripts
+│   ├── debug/          # Debugging scripts & outputs
+│   ├── dev/            # Development scripts (Docker, start scripts)
+│   └── archive/        # Archived migration scripts
+│
+├── migrations/          # Database migrations
+│   └── sql/            # SQL migration files
+│
+├── tools/              # Development tools
+│   ├── get_token_helper.py  # OAuth token helper
+│   └── certificates/        # SSL certificates
+│
+├── docs/               # Documentation
+│   ├── README.md       # This file
+│   ├── CELERY_BEAT_README.md
+│   ├── DOCKER_README.md
+│   └── archive/        # Archived docs
+│
+├── logs/               # Application logs
+├── reports/            # Generated reports
+└── repo_cache/         # Cached analyzed repositories
 
-```bash
-# Build and run
-docker-compose up -d
-
-# View logs
-docker-compose logs -f api
-
-# Check health
-curl http://localhost:8000/health
 ```
 
-## 📡 API Endpoints
+## 🔧 Configuration
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/api/stats` | GET | Dashboard statistics |
-| `/api/projects` | GET | List all projects |
-| `/api/projects/{id}` | GET | Project details |
-| `/api/leaderboard` | GET | Project rankings |
-| `/api/tech-stacks` | GET | All technologies |
-| `/api/analyze-repo` | POST | Submit repository |
-| `/api/analysis-status/{job_id}` | GET | Analysis progress |
+Required environment variables in `.env`:
 
-Full API documentation: [FRONTEND_DEVELOPER_GUIDE.md](FRONTEND_DEVELOPER_GUIDE.md)
+```env
+# Database
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+SUPABASE_SERVICE_KEY=your_service_key
 
-## 🚀 Deployment
+# AI
+GEMINI_API_KEY=your_gemini_key
 
-### AWS EC2 with GitHub Actions (Recommended)
+# GitHub
+GH_API_KEY=your_github_token
 
-Automated deployment on push to main branch.
+# Redis/Celery
+REDIS_URL=redis://localhost:6379/0
 
-**Setup:**
-1. Launch EC2 instance (Ubuntu 22.04, t3.small+)
-2. Configure GitHub Secrets (see [GITHUB_ACTIONS_DEPLOYMENT.md](GITHUB_ACTIONS_DEPLOYMENT.md))
-3. Push to main branch → automatic deployment
-
-```bash
-# Configure EC2
-./scripts/ec2-setup.sh
-
-# Push code (triggers deployment)
-git push origin main
+# Server
+PORT=8000
+CORS_ORIGINS=http://localhost:8080
 ```
 
-See complete guide: [GITHUB_ACTIONS_DEPLOYMENT.md](GITHUB_ACTIONS_DEPLOYMENT.md)
+## 📚 Key Components
 
-### Other Platforms
+### API Routers
+- `analysis.py` - Repository analysis endpoints
+- `frontend_api.py` - Frontend-compatible project/leaderboard APIs
+- `auth_new.py` - Google OAuth authentication
+- `batches.py` - Batch management
+- `teams.py` - Team management
+- `analytics.py` - Team analytics
+- `dashboards.py` - Admin/mentor dashboards
+- `analysis_status.py` - Real-time job status (WebSocket)
+- `analysis_history.py` - Historical snapshots
 
-- **Google Cloud Run**: One-click deployment
-- **Heroku**: `git push heroku main`
-- **DigitalOcean**: App Platform integration
+### Analysis Pipeline
+1. **Clone** - Repository cloning
+2. **Detect** - Tech stack detection
+3. **Analyze** - Code quality, security, architecture
+4. **Score** - Multi-dimensional scoring
+5. **Report** - Generate comprehensive report
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for details.
+### Background Jobs (Celery)
+- Repository analysis (async)
+- Batch processing
+- Automatic weekly re-analysis
+- Health status updates
 
 ## 🧪 Testing
 
 ```bash
 # Run all tests
-pytest tests/ -v
+pytest
 
-# Run with coverage
-pytest --cov=. --cov-report=html
+# Run specific test suite
+pytest tests/integration/test_phase1.py
 
-# Test API endpoints
-python test_frontend_api.py
+# With coverage
+pytest --cov=src tests/
 ```
 
-**Test Status**: ✅ 79/79 passing (100%)
+## 🐳 Docker
 
-## 📚 Documentation
+```bash
+# Build
+docker build -t hackeval-backend .
 
-- **[FRONTEND_DEVELOPER_GUIDE.md](FRONTEND_DEVELOPER_GUIDE.md)** - Complete API reference (800+ lines)
-- **[GITHUB_ACTIONS_DEPLOYMENT.md](GITHUB_ACTIONS_DEPLOYMENT.md)** - CI/CD setup guide
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Deployment options (Docker, Cloud)
-- **[QUICKSTART.md](QUICKSTART.md)** - Quick deployment guide
-
-## 🏗️ Architecture
-
-```
-┌─────────────────┐
-│   FastAPI App   │
-│   (main.py)     │
-└────────┬────────┘
-         │
-         ├─── Routers (frontend_api.py)
-         │
-         ├─── Services (frontend_adapter.py)
-         │
-         ├─── Orchestrator (LangGraph)
-         │    └─── Agent Workflow
-         │
-         ├─── Detectors
-         │    ├── AI Detection
-         │    ├── Security Scanner
-         │    ├── Quality Metrics
-         │    ├── Commit Forensics
-         │    └── Stack Detection
-         │
-         └─── Database (Supabase)
-              ├── Projects
-              ├── Analysis Jobs
-              ├── Tech Stack
-              ├── Security Issues
-              └── Contributors
+# Run
+docker-compose up
 ```
 
-## 🔒 Security
+See `docs/DOCKER_README.md` for details.
 
-- **Environment Variables** - Never commit `.env` files
-- **SSL/HTTPS** - Required for production
-- **Rate Limiting** - Nginx configuration included
-- **Input Validation** - All inputs sanitized
-- **CORS** - Configurable origins
+## 📊 Database Schema
+
+Uses PostgreSQL via Supabase:
+- `projects` - Analyzed projects
+- `teams` - Team information
+- `batches` - Hackathon batches
+- `analysis_jobs` - Analysis job tracking
+- `analysis_snapshots` - Historical snapshots
+- `users` - User authentication
+- `mentor_assignments` - Mentor-team mappings
+
+## 🔒 Authentication
+
+Role-based access control:
+- **Admin** - Full system access
+- **Mentor** - Team management, grading
+- **Participant** - View own team data
+
+## 📖 Documentation
+
+- **API Docs** - http://localhost:8000/docs (auto-generated)
+- **Architecture** - See root `CODEBASE_DOCUMENTATION.md`
+- **Integration Guide** - See root `INTEGRATION_GUIDE.md`
+- **Performance** - See root `PERFORMANCE_GUIDE.md`
+
+## 🛠️ Development Scripts
+
+```bash
+# Admin scripts
+scripts/admin/set_admin_role.py          # Set user roles
+scripts/admin/cleanup_projects.py        # Clean duplicate projects
+scripts/admin/backfill_languages.py      # Update tech stack data
+
+# Debug scripts
+scripts/debug/debug_analytics.py         # Debug analytics issues
+scripts/debug/diagnose_batch_failure.py  # Diagnose batch failures
+
+# Dev scripts
+scripts/dev/docker-start.sh              # Start Docker containers
+scripts/dev/start_worker.ps1             # Start Celery worker
+```
 
 ## 📈 Performance
 
-- **Multi-worker** - 4 Uvicorn workers
-- **Connection Pooling** - Supabase connection management
-- **Async Operations** - Non-blocking analysis
-- **Docker Optimized** - Multi-stage builds
-- **Health Checks** - Automatic monitoring
+- **Caching**: Redis (5-min TTL for analytics)
+- **Database**: 18 performance indexes
+- **Analysis**: Parallel LLM calls (3x faster)
+- **WebSocket**: Real-time job status updates
 
 ## 🤝 Contributing
 
-```bash
-# Fork repository
-# Create feature branch
-git checkout -b feature/amazing-feature
-
-# Make changes and test
-pytest tests/
-
-# Commit and push
-git commit -m "Add amazing feature"
-git push origin feature/amazing-feature
-
-# Open Pull Request
-```
-
-## 📝 Environment Variables
-
-```env
-# Required
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_anon_key
-OPENAI_API_KEY=sk-your-key
-
-# Optional
-CORS_ORIGINS=http://localhost:3000,https://yourfrontend.com
-ENVIRONMENT=production
-LOG_LEVEL=info
-WORKERS=4
-```
-
-## 🐛 Troubleshooting
-
-### API Won't Start
-```bash
-# Check logs
-docker-compose logs api
-
-# Verify environment variables
-cat .env
-```
-
-### Database Connection Failed
-```bash
-# Test Supabase connection
-curl -X GET "$SUPABASE_URL/rest/v1/" \
-  -H "apikey: $SUPABASE_KEY"
-```
-
-### Port Already in Use
-```bash
-# Windows
-netstat -ano | findstr :8000
-taskkill /PID <PID> /F
-
-# Linux
-sudo lsof -i :8000
-sudo kill -9 <PID>
-```
-
-## 📞 Support
-
-- **Documentation**: See `/docs` folder
-- **API Docs**: `http://localhost:8000/docs`
-- **Issues**: GitHub Issues
+1. Follow existing code structure
+2. Add tests for new features
+3. Update documentation
+4. Run `pytest` before committing
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) file
+Proprietary - HackEval Team 2026
 
-## 🎯 Roadmap
+## 🆘 Support
 
-- [ ] WebSocket support for real-time updates
-- [ ] Batch repository upload
-- [ ] Advanced analytics dashboard
-- [ ] Custom scoring rules
-- [ ] GitHub App integration
-- [ ] Multi-language support
-- [ ] Advanced caching layer
-- [ ] GraphQL API
-
-## ⭐ Acknowledgments
-
-- FastAPI for the excellent web framework
-- Supabase for database infrastructure
-- OpenAI for AI capabilities
-- LangGraph for workflow orchestration
-
----
-
-**Built with ❤️ for automated code quality assessment**
-
-[![Tests](https://github.com/YOUR_USERNAME/repo-analyzer/workflows/Run%20Tests/badge.svg)](https://github.com/YOUR_USERNAME/repo-analyzer/actions)
-[![Deploy](https://github.com/YOUR_USERNAME/repo-analyzer/workflows/Deploy%20to%20AWS%20EC2/badge.svg)](https://github.com/YOUR_USERNAME/repo-analyzer/actions)
+- Issues: Check `docs/archive/troubleshooting/`
+- API Reference: http://localhost:8000/docs
+- Logs: `logs/` directory

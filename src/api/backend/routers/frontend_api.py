@@ -44,16 +44,19 @@ async def get_project_detail(project_id: str):
             project, tech_stack, issues, team_members, report_json
         )
         
-    # Cache with status-appropriate TTL
+        # Cache with status-appropriate TTL
         if project.get("status") == "completed":
-        # Completed projects rarely change - cache for 5 minutes
-         cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
+            # Completed projects rarely change - cache for 5 minutes
+            cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
         elif project.get("status") in ["pending", "processing"]:
-        # Processing projects change frequently - cache for 30 seconds to reduce rapid refreshes
-         cache.set(cache_key, result, RedisCache.TTL_SHORT)
+            # Processing projects change frequently - cache for 30 seconds to reduce rapid refreshes
+            cache.set(cache_key, result, RedisCache.TTL_SHORT)
         elif project.get("status") == "failed":
-        # Failed projects don't change - cache for 5 minutes
-        raise
+            # Failed projects don't change - cache for 5 minutes
+            cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
+        
+        return result
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -213,10 +216,37 @@ async def list_projects(
         else:  # recent
             projects = sorted(projects, key=lambda x: x.get("created_at") or "", reverse=True)
         
-        # Transform each project
+        # Batch fetch tech stacks and issues for all projects (fix N+1 query)
+        from ..crud import get_supabase_client
+        supabase = get_supabase_client()
+        
+        project_ids = [p["id"] for p in projects]
+        if not project_ids:
+            return []
+        
+        # Single query for all tech stacks
+        tech_response = supabase.table("tech_stack").select("*").in_("project_id", project_ids).execute()
+        tech_map = {}
+        for tech in (tech_response.data or []):
+            pid = tech["project_id"]
+            if pid not in tech_map:
+                tech_map[pid] = []
+            tech_map[pid].append(tech)
+        
+        # Single query for all issues (only if needed for security count)
+        issues_response = supabase.table("issues").select("project_id, type").in_("project_id", project_ids).execute()
+        issues_map = {}
+        for issue in (issues_response.data or []):
+            pid = issue["project_id"]
+            if pid not in issues_map:
+                issues_map[pid] = []
+            issues_map[pid].append(issue)
+        
+        # Transform each project using pre-fetched data
         results = []
         for project in projects:
-            tech_stack = TechStackCRUD.get_tech_stack(project["id"])
+            pid = project["id"]
+            tech_stack = tech_map.get(pid, [])
             
             # Filter by tech if specified
             if tech:
@@ -224,8 +254,8 @@ async def list_projects(
                 if tech not in tech_names:
                     continue
             
-            # Count security issues
-            issues = IssueCRUD.get_issues(project["id"])
+            # Count security issues from pre-fetched data
+            issues = issues_map.get(pid, [])
             security_count = len([i for i in issues if i.get("type") == "security"])
             
             item = FrontendAdapter.transform_project_list_item(project, tech_stack, security_count)
@@ -271,10 +301,28 @@ async def get_leaderboard(
         score_key = f"{sort}_score" if sort != "total" else "total_score"
         projects = sorted(projects, key=lambda x: x.get(score_key) or 0, reverse=True)
         
-        # Transform
+        # Batch fetch tech stacks for all projects (fix N+1 query)
+        from ..crud import get_supabase_client
+        supabase = get_supabase_client()
+        
+        project_ids = [p["id"] for p in projects]
+        if not project_ids:
+            return {"leaderboard": [], "total": 0, "page": 1, "page_size": 0}
+        
+        # Single query for all tech stacks
+        tech_response = supabase.table("tech_stack").select("*").in_("project_id", project_ids).execute()
+        tech_map = {}
+        for tech in (tech_response.data or []):
+            pid = tech["project_id"]
+            if pid not in tech_map:
+                tech_map[pid] = []
+            tech_map[pid].append(tech)
+        
+        # Transform using pre-fetched data
         results = []
         for project in projects:
-            tech_stack = TechStackCRUD.get_tech_stack(project["id"])
+            pid = project["id"]
+            tech_stack = tech_map.get(pid, [])
             
             # Filter by tech if specified
             if tech:

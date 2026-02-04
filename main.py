@@ -14,8 +14,6 @@ load_dotenv()
 # Import routers
 from src.api.backend.routers import (
     analysis, 
-    projects, 
-    leaderboard, 
     frontend_api, 
     auth,
     auth_new,
@@ -58,8 +56,6 @@ app.add_middleware(
 
 # Include routers
 app.include_router(analysis.router)
-# app.include_router(projects.router)  # Disabled - using frontend_api instead
-# app.include_router(leaderboard.router)  # Disabled - using frontend_api instead
 app.include_router(frontend_api.router)  # Frontend-compatible endpoints
 app.include_router(auth.router)  # Auth/me and project comments only
 
