@@ -481,6 +481,7 @@ async def trigger_batch_analysis(
                 "project_id": project_id,
                 "status": "queued",
                 "requested_by": str(current_user.user_id),
+                "started_at": datetime.now().isoformat(),
                 "metadata": {
                     "batch_run_id": run_id,
                     "run_number": run_number,

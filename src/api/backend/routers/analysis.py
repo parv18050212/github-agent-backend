@@ -325,7 +325,8 @@ async def list_analysis_jobs(
                 current_stage=job.get("current_stage"),
                 error_message=job.get("error_message"),
                 started_at=job.get("started_at") or datetime.now(),
-                completed_at=job.get("completed_at")
+                completed_at=job.get("completed_at"),
+                last_analyzed_at=job.get("last_analyzed_at")
             ))
         
         total_pages = ceil(total_jobs / page_size) if page_size > 0 else 0

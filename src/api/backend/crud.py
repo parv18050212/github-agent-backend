@@ -87,7 +87,7 @@ class ProjectCRUD:
         page_size: int = 20
     ) -> tuple[List[Dict[str, Any]], int]:
         """List projects with filters and pagination"""
-        supabase = get_supabase_client()
+        supabase = get_supabase_admin_client()
         
         # Build query
         query = supabase.table("projects").select("*", count="exact")
@@ -324,8 +324,8 @@ class AnalysisJobCRUD:
         # Given the requirement "show list of eligible teams", we generally want 1 row per team/project.
         
         query = (supabase.table("projects")
-                 .select("id, repo_url, team_name, status, created_at, analysis_jobs(*)", count="exact")
-                 .order("created_at", desc=True))
+             .select("id, repo_url, team_name, status, created_at, analyzed_at, last_analyzed_at, analysis_jobs(*)", count="exact")
+             .order("created_at", desc=True))
                  
         if status:
             if status == "pending":
@@ -351,13 +351,18 @@ class AnalysisJobCRUD:
         
         for p in result.data:
             jobs = p.get("analysis_jobs", [])
-            # Sort jobs by started_at desc if multiple (Supabase join might return list)
+            # Sort jobs by started_at (fallback to created_at) desc if multiple
             latest_job = None
             if jobs:
-                jobs.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+                jobs.sort(key=lambda x: x.get("started_at") or x.get("created_at") or "", reverse=True)
                 latest_job = jobs[0]
             
             # Construct row
+            if latest_job:
+                last_analyzed_at = latest_job.get("completed_at")
+            else:
+                last_analyzed_at = p.get("last_analyzed_at") or p.get("analyzed_at")
+
             row = {
                 "job_id": latest_job.get("id") if latest_job else None,
                 "project_id": p.get("id"),
@@ -368,6 +373,7 @@ class AnalysisJobCRUD:
                 "current_stage": latest_job.get("current_stage") if latest_job else None,
                 "started_at": latest_job.get("started_at") if latest_job else p.get("created_at"), # Use project create time if no job
                 "completed_at": latest_job.get("completed_at") if latest_job else None,
+                "last_analyzed_at": last_analyzed_at,
                 "error_message": latest_job.get("error_message") if latest_job else None
             }
             transformed_jobs.append(row)
@@ -723,6 +729,12 @@ class UserCRUD:
 
         existing = UserCRUD.get_user(user_id)
         if existing:
+            if full_name and not existing.get("full_name"):
+                try:
+                    supabase.table("users").update({"full_name": full_name}).eq("id", user_id).execute()
+                    existing["full_name"] = full_name
+                except Exception as e:
+                    print(f"[UserCRUD] Failed to update full_name for {user_id}: {e}")
             return existing
 
         # Check if this is the first user in the system

@@ -106,6 +106,7 @@ class AnalysisJobListItem(BaseModel):
     error_message: Optional[str] = None
     started_at: datetime
     completed_at: Optional[datetime] = None
+    last_analyzed_at: Optional[datetime] = None
 
 
 class AnalysisJobListResponse(BaseModel):

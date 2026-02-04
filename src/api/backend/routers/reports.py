@@ -593,11 +593,5 @@ async def get_team_report(
         cache.set(f"hackeval:report:team:{teamId}", report, RedisCache.TTL_SHORT)
     
     return report
-            }
-        )
-    
-    # Cache the JSON response for 2 minutes
-    if format == "json":
-        cache.set(f"hackeval:report:team:{teamId}", report, RedisCache.TTL_SHORT)
     
     return report

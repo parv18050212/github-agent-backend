@@ -1055,7 +1055,8 @@ async def analyze_team(
     job_insert = {
         "project_id": project_id,
         "status": "queued",
-        "requested_by": str(current_user.user_id)
+        "requested_by": str(current_user.user_id),
+        "started_at": datetime.now().isoformat()
     }
     
     job_response = supabase.table("analysis_jobs").insert(job_insert).execute()

@@ -16,6 +16,7 @@ from src.api.backend.utils.cache import cache, RedisCache
 router = APIRouter(prefix="/api", tags=["frontend"])
 
 
+
 @router.get("/projects/{project_id}")
 async def get_project_detail(project_id: str):
     """Get detailed project evaluation (matches frontend ProjectEvaluation)"""
@@ -216,9 +217,9 @@ async def list_projects(
         else:  # recent
             projects = sorted(projects, key=lambda x: x.get("created_at") or "", reverse=True)
         
-        # Batch fetch tech stacks and issues for all projects (fix N+1 query)
-        from ..crud import get_supabase_client
-        supabase = get_supabase_client()
+            # Batch fetch tech stacks and issues for all projects (fix N+1 query)
+            from ..database import get_supabase_admin_client
+            supabase = get_supabase_admin_client()
         
         project_ids = [p["id"] for p in projects]
         if not project_ids:
@@ -274,49 +275,81 @@ async def list_projects(
 @router.get("/leaderboard")
 async def get_leaderboard(
     tech: Optional[str] = Query(None),
-    sort: str = Query("total", pattern="^(total|quality|security|originality|architecture|documentation)$"),
-    search: Optional[str] = Query(None)
+    sort: Optional[str] = Query(None, pattern="^(total|quality|security|originality|architecture|documentation)$"),
+    search: Optional[str] = Query(None),
+    # New parameters to support frontend format
+    sort_by: Optional[str] = Query(None),
+    order: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=1000),
+    batch_id: Optional[str] = Query(None)
 ):
     """Get leaderboard with filters (matches frontend LeaderboardEntry[])""" 
     try:
-        # Check cache (only for unfiltered queries)
-        cache_key = f"hackeval:leaderboard:{tech}:{sort}:{search}"
-        if not search:
-            cached_result = cache.get(cache_key)
-            if cached_result:
-                return cached_result
+        from ..database import get_supabase_admin_client
+        supabase = get_supabase_admin_client()
+
+        # Handle both old and new parameter formats
+        if sort_by:
+            # Frontend format: sort_by=total_score, order=desc
+            sort_field = sort_by
+        elif sort:
+            # Legacy format: sort=total
+            sort_field = f"{sort}_score" if sort != "total" else "total_score"
+        else:
+            sort_field = "total_score"
         
-        projects, _ = ProjectCRUD.list_projects()
+        sort_order = order or "desc"
         
-        # Filter only completed
-        projects = [p for p in projects if p.get("status") == "completed"]
+        # Check cache first (cache for 30 seconds)
+        cache_key = f"hackeval:leaderboard:{tech}:{sort_field}:{sort_order}:{search}:{batch_id}:{page}:{page_size}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return cached_result
         
-        # Apply search
+        # OPTIMIZED: Single query with status filter, sorting, and tech stack join
+        # This replaces multiple round-trips with one efficient query
+        query = supabase.table("projects").select(
+            "id, team_name, repo_url, total_score, quality_score, security_score, "
+            "originality_score, engineering_score, documentation_score, verdict, team_id, status"
+        ).eq("status", "completed")
+        
+        # Apply batch filter if specified
+        if batch_id:
+            # Get project IDs from teams in this batch first
+            teams_response = supabase.table("teams").select("project_id").eq("batch_id", batch_id).execute()
+            batch_project_ids = [t["project_id"] for t in teams_response.data if t.get("project_id")]
+            if batch_project_ids:
+                query = query.in_("id", batch_project_ids)
+            else:
+                return {"leaderboard": [], "total": 0, "page": page, "page_size": page_size}
+        
+        # Apply search filter at database level
         if search:
-            search_lower = search.lower()
-            projects = [p for p in projects 
-                       if search_lower in (p.get("team_name") or "").lower()]
+            query = query.ilike("team_name", f"%{search}%")
         
-        # Sort by score
-        score_key = f"{sort}_score" if sort != "total" else "total_score"
-        projects = sorted(projects, key=lambda x: x.get(score_key) or 0, reverse=True)
+        # Sort at database level
+        query = query.order(sort_field, desc=(sort_order.lower() == "desc"))
         
-        # Batch fetch tech stacks for all projects (fix N+1 query)
-        from ..crud import get_supabase_client
-        supabase = get_supabase_client()
+        # Execute optimized query
+        result = query.execute()
+        projects = result.data or []
         
+        # Early return if no projects
+        if not projects:
+            return {"leaderboard": [], "total": 0, "page": page, "page_size": page_size}
+        
+        # Get project IDs for tech stack fetch
         project_ids = [p["id"] for p in projects]
-        if not project_ids:
-            return {"leaderboard": [], "total": 0, "page": 1, "page_size": 0}
         
         # Single query for all tech stacks
-        tech_response = supabase.table("tech_stack").select("*").in_("project_id", project_ids).execute()
+        tech_response = supabase.table("tech_stack").select("project_id, technology").in_("project_id", project_ids).execute()
         tech_map = {}
-        for tech in (tech_response.data or []):
-            pid = tech["project_id"]
+        for tech_item in (tech_response.data or []):  # Use tech_item to avoid shadowing 'tech' query param
+            pid = tech_item["project_id"]
             if pid not in tech_map:
                 tech_map[pid] = []
-            tech_map[pid].append(tech)
+            tech_map[pid].append(tech_item)
         
         # Transform using pre-fetched data
         results = []
@@ -333,17 +366,16 @@ async def get_leaderboard(
             item = FrontendAdapter.transform_leaderboard_item(project, tech_stack)
             results.append(item)
         
-        # FIXED: Return proper schema format instead of raw array
+        # Return proper schema format
         response = {
             "leaderboard": results,
             "total": len(results),
-            "page": 1,
-            "page_size": len(results)
+            "page": page,
+            "page_size": page_size
         }
         
-        # Cache for 30 seconds
-        if not search:
-            cache.set(cache_key, response, RedisCache.TTL_SHORT)
+        # Cache for 60 seconds (longer TTL for better perf)
+        cache.set(cache_key, response, 60)
         
         return response
         

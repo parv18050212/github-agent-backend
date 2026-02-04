@@ -38,7 +38,17 @@ async def get_current_user(
     email = getattr(user, "email", None)
     full_name = None
     if hasattr(user, "user_metadata"):
-        full_name = (getattr(user, "user_metadata", {}) or {}).get("full_name")
+        metadata = (getattr(user, "user_metadata", {}) or {})
+        full_name = (
+            metadata.get("full_name")
+            or metadata.get("fullName")
+            or metadata.get("name")
+        )
+        if not full_name:
+            given = metadata.get("given_name") or metadata.get("first_name")
+            family = metadata.get("family_name") or metadata.get("last_name")
+            if given or family:
+                full_name = " ".join([n for n in [given, family] if n])
 
     if not user_id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token: missing user id")
