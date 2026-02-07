@@ -334,7 +334,7 @@ async def get_mentor_team_report(
     
     # Get team with project
     team_response = supabase.table("teams").select(
-        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,originality_score,architecture_score,documentation_score,last_analyzed_at,analyzed_at,created_at)"
+        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,originality_score,engineering_score,organization_score,documentation_score,last_analyzed_at,analyzed_at,created_at)"
     ).eq("id", team_id).execute()
     
     if not team_response.data:
@@ -349,7 +349,7 @@ async def get_mentor_team_report(
     quality_score = (project or {}).get("quality_score") or 0
     security_score = (project or {}).get("security_score") or 0
     originality_score = (project or {}).get("originality_score") or 0
-    architecture_score = (project or {}).get("architecture_score") or 0
+    architecture_score = (project or {}).get("engineering_score") or (project or {}).get("organization_score") or 0
     documentation_score = (project or {}).get("documentation_score") or 0
     
     # Get students
