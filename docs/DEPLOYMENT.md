@@ -562,9 +562,9 @@ ANALYSIS_TIMEOUT = 600  # 10 minutes
 ### Port Already in Use
 
 ```bash
-# Find process using port 8000
-sudo lsof -i :8000
-sudo netstat -tulpn | grep 8000
+# Find process using port 3000
+sudo lsof -i :3000
+sudo netstat -tulpn | grep 3000
 
 # Kill process
 sudo kill -9 <PID>
@@ -614,9 +614,9 @@ Update `nginx.conf`:
 
 ```nginx
 upstream api_backend {
-    server api1:8000;
-    server api2:8000;
-    server api3:8000;
+    server api1:3000;
+    server api2:3000;
+    server api3:3000;
 }
 ```
 

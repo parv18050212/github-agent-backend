@@ -3,7 +3,7 @@
 ## What's Included
 
 This Docker Compose setup runs your **backend services** in Linux containers:
-- ✅ **FastAPI** (http://localhost:8000)
+- ✅ **FastAPI** (http://localhost:3000)
 - ✅ **Celery Worker** (no more Windows errors!)
 - ✅ **Celery Beat** (automated scheduling)
 
@@ -75,8 +75,8 @@ npm run dev
 
 Access:
 - Frontend: http://localhost:8080
-- Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+- Backend API: http://localhost:3000
+- API Docs: http://localhost:3000/docs
 
 ---
 
@@ -126,12 +126,12 @@ docker-compose ps
 
 ## Troubleshooting
 
-### Port 8000 Already in Use
+### Port 3000 Already in Use
 
 **Kill existing process:**
 ```bash
 # Find process
-netstat -ano | findstr :8000
+netstat -ano | findstr :3000
 
 # Kill process (replace PID)
 taskkill /PID <PID> /F

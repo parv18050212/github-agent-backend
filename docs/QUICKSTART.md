@@ -117,7 +117,7 @@ git push heroku main
 | **FRONTEND_DEVELOPER_GUIDE.md** | API reference for frontend team (800+ lines) |
 | **docker-compose.yml** | Docker orchestration |
 | **Dockerfile** | Container image definition |
-| **nginx.conf** | Reverse proxy configuration |
+| **docs/nginx.conf** | Reverse proxy configuration example |
 | **.env.production** | Environment variables template |
 | **deploy.sh** / **deploy.ps1** | Automated deployment scripts |
 
@@ -142,12 +142,8 @@ WORKERS=4
 
 ### Update CORS Origins
 
-In `main.py` line 24:
-```python
-allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-```
-
-Or set in `.env`:
+If your frontend is on the same origin behind Nginx, CORS is not required.
+If you deploy the frontend on a different domain, set explicit origins in `.env`:
 ```env
 CORS_ORIGINS=https://yourfrontend.com,https://www.yourfrontend.com
 ```

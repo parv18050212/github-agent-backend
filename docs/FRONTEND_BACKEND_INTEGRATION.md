@@ -26,11 +26,13 @@
 
 ```
 Frontend (React/Next.js/Vue)
-    ↓
+  ↓
 API Client (axios/fetch)
-    ↓
-FastAPI Backend (http://34.200.19.255:8000)
-    ↓
+  ↓
+Nginx (public :80/:443)
+  ↓
+FastAPI Backend (http://localhost:3000, private)
+  ↓
 Supabase PostgreSQL Database
 ```
 
@@ -38,9 +40,9 @@ Supabase PostgreSQL Database
 
 | Environment | URL | 
 |-------------|-----|
-| Local Development | `http://localhost:8000` |
-| EC2 Production | `http://34.200.19.255:8000` |
-| With Domain | `https://api.yourapp.com` |
+| Local Development | `http://localhost:8080` (frontend) + `/api` (proxy) |
+| EC2 Production | `http://your-server-ip` (same origin) |
+| With Domain | `https://yourapp.com` (same origin) |
 
 ---
 
@@ -52,7 +54,8 @@ Create `.env.local` (Next.js) or `.env` (React/Vue):
 
 ```env
 # API Configuration
-NEXT_PUBLIC_API_URL=http://34.200.19.255:8000
+# Leave empty to use same-origin /api paths
+NEXT_PUBLIC_API_URL=
 NEXT_PUBLIC_API_TIMEOUT=30000
 NEXT_PUBLIC_ENABLE_LOGGING=true
 
@@ -68,7 +71,7 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 
 // API Configuration
 const API_CONFIG = {
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+  baseURL: process.env.NEXT_PUBLIC_API_URL || '',
   timeout: parseInt(process.env.NEXT_PUBLIC_API_TIMEOUT || '30000'),
   headers: {
     'Content-Type': 'application/json',
@@ -140,7 +143,7 @@ If you prefer native `fetch`:
 
 **`lib/api/fetchClient.ts`**
 ```typescript
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 interface FetchOptions extends RequestInit {
   params?: Record<string, string | number>;
@@ -191,12 +194,10 @@ export default apiFetch;
 
 ### CORS Configuration
 
-The backend is configured with CORS. Current setting:
-```python
-# Backend: CORS_ORIGINS=*
-```
+With Nginx serving the frontend and proxying `/api` on the same origin,
+frontend requests are same-origin and do not require CORS.
 
-For production, update to specific origins:
+If you deploy the frontend on a different domain, set explicit origins:
 ```env
 CORS_ORIGINS=https://yourapp.com,https://www.yourapp.com
 ```
@@ -1229,7 +1230,7 @@ describe('APIService', () => {
 
 ## 📞 Support & Resources
 
-- **API Documentation:** http://34.200.19.255:8000/docs
+- **API Documentation:** http://your-server-ip/docs
 - **Backend Repository:** [Your GitHub Repo]
 - **Issues:** [GitHub Issues]
 
