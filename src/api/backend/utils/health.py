@@ -38,14 +38,69 @@ def calculate_team_health(
         except:
             report_json = None
     
-    # No report data at all
-    if not report_json:
-        return "critical", ["ghost_repo"]
-    
     # Extract metrics from report
-    commit_stats = report_json.get("commit_stats", {})
-    contributors = report_json.get("author_stats", [])
-    
+    commit_stats = report_json.get("commit_stats", {}) if isinstance(report_json, dict) else {}
+    commit_details = report_json.get("commit_details", {}) if isinstance(report_json, dict) else {}
+    all_commits = commit_details.get("all_commits", []) if isinstance(commit_details, dict) else []
+
+    # Normalize contributors from multiple possible formats
+    contributors_raw = None
+    if isinstance(report_json, dict):
+        contributors_raw = report_json.get("author_stats") or report_json.get("team")
+    if not contributors_raw and isinstance(commit_details, dict):
+        contributors_raw = commit_details.get("author_stats")
+
+    contributors: List[Dict[str, Any]] = []
+    if isinstance(contributors_raw, list):
+        contributors = contributors_raw
+    elif isinstance(contributors_raw, dict):
+        for author, stats in contributors_raw.items():
+            if isinstance(stats, dict):
+                commit_count = stats.get("commit_count")
+                if commit_count is None:
+                    commit_count = stats.get("commits", 0)
+            else:
+                commit_count = stats
+            contributors.append({"author": author, "commit_count": commit_count or 0})
+
+    # Fallback commit stats if not present in report_json
+    if not commit_stats and isinstance(report_json, dict):
+        total_commits_fallback = commit_details.get("total_commits") or report_json.get("total_commits") or len(all_commits) or 0
+        last_commit_str_fallback = None
+        if all_commits:
+            try:
+                last_commit_str_fallback = max(
+                    (c.get("date") for c in all_commits if c.get("date")),
+                    default=None
+                )
+            except:
+                last_commit_str_fallback = None
+
+        commit_stats = {
+            "total_commits": total_commits_fallback,
+            "last_commit_date": last_commit_str_fallback,
+            "commits_last_30_days": 0,
+            "commits_last_7_days": 0
+        }
+
+        if all_commits:
+            try:
+                cutoff_30 = now - timedelta(days=30)
+                cutoff_7 = now - timedelta(days=7)
+                for commit in all_commits:
+                    commit_date_str = commit.get("date")
+                    if not commit_date_str:
+                        continue
+                    commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
+                    if commit_date.tzinfo is None:
+                        commit_date = commit_date.replace(tzinfo=timezone.utc)
+                    if commit_date >= cutoff_30:
+                        commit_stats["commits_last_30_days"] += 1
+                    if commit_date >= cutoff_7:
+                        commit_stats["commits_last_7_days"] += 1
+            except:
+                pass
+
     total_commits = commit_stats.get("total_commits", 0)
     last_commit_str = commit_stats.get("last_commit_date")
     
@@ -70,8 +125,8 @@ def calculate_team_health(
     
     # === Risk Flag Detection ===
     
-    # Ghost repo - no commits ever
-    if total_commits == 0:
+    # Ghost repo - no commits ever or repository unavailable
+    if total_commits == 0 and not last_commit_str and not last_activity:
         risk_flags.append("ghost_repo")
     
     # Stale - no commits in >21 days

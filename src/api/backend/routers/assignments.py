@@ -14,7 +14,7 @@ from ..schemas import (
     MessageResponse
 )
 from ..middleware import get_current_user, RoleChecker, AuthUser
-from ..database import get_supabase
+from ..database import get_supabase_admin_client
 
 router = APIRouter(prefix="/api/assignments", tags=["Assignments"])
 
@@ -29,12 +29,12 @@ async def assign_teams(
     
     Creates mentor-team assignments and updates team mentor_id.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify mentor exists
-    mentor_response = supabase.table("users").select("id, email, full_name").eq(
+    mentor_response = supabase.table("users").select("id, email, full_name, role, is_mentor").eq(
         "id", str(assignment_data.mentor_id)
-    ).eq("role", "mentor").execute()
+    ).or_("role.eq.mentor,is_mentor.eq.true").execute()
     
     if not mentor_response.data:
         raise HTTPException(status_code=404, detail="Mentor not found")
@@ -111,12 +111,12 @@ async def unassign_teams(
     
     Removes mentor-team assignments and clears team mentor_id.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify mentor exists
-    mentor_response = supabase.table("users").select("id").eq(
+    mentor_response = supabase.table("users").select("id, role, is_mentor").eq(
         "id", str(assignment_data.mentor_id)
-    ).eq("role", "mentor").execute()
+    ).or_("role.eq.mentor,is_mentor.eq.true").execute()
     
     if not mentor_response.data:
         raise HTTPException(status_code=404, detail="Mentor not found")
@@ -152,7 +152,7 @@ async def get_mentor_assignments(
     
     Mentors can view their own assignments, admins can view any mentor's assignments.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Check authorization
     if current_user.role != "admin" and str(current_user.user_id) != str(mentor_id):

@@ -57,10 +57,14 @@ app.add_middleware(
 # Include routers
 app.include_router(analysis.router)
 app.include_router(frontend_api.router)  # Frontend-compatible endpoints
-app.include_router(auth.router)  # Auth/me and project comments only
+
+# New authentication with Google OAuth (register before legacy auth)
+app.include_router(auth_new.router)
+
+# Legacy auth + project comments only
+app.include_router(auth.router)
 
 # New batch management system routers
-app.include_router(auth_new.router)  # New authentication with Google OAuth
 app.include_router(batches.router)  # Batch management (CRUD)
 app.include_router(teams.router)  # Team management - all /api/teams endpoints (Phase 2)
 app.include_router(mentors.router)  # Mentor management (Phase 3)
@@ -157,7 +161,7 @@ async def shutdown_event():
 if __name__ == "__main__":
     import uvicorn
     
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 3000))
     
     uvicorn.run(
         "main:app",

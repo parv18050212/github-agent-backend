@@ -424,6 +424,7 @@ class UserProfileResponse(BaseModel):
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
     created_at: datetime
+    is_mentor: Optional[bool] = None
 
 
 class UserUpdateRequest(BaseModel):

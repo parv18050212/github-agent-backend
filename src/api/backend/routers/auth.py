@@ -17,7 +17,7 @@ from src.api.backend.utils.auth import get_current_user, AuthContext
 router = APIRouter(prefix="/api", tags=["auth", "comments"])
 
 
-@router.get("/auth/me", response_model=AuthUserResponse)
+@router.get("/auth/legacy-me", response_model=AuthUserResponse)
 async def get_me(ctx: AuthContext = Depends(get_current_user)):
     """Return the authenticated user's profile and role."""
     profile = ctx.get("profile", {}) or {}

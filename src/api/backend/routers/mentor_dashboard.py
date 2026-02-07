@@ -10,7 +10,7 @@ from datetime import datetime
 import json
 
 from ..middleware.auth import get_current_user, AuthUser
-from ..database import get_supabase
+from ..database import get_supabase, get_supabase_admin_client
 from ..crud import TeamCRUD
 from ..schemas import (
     LeaderboardResponse,
@@ -26,6 +26,15 @@ router = APIRouter(prefix="/api/mentor", tags=["Mentor Dashboard"])
 def require_mentor(current_user: AuthUser = Depends(get_current_user)) -> AuthUser:
     """Dependency to ensure user is a mentor."""
     if current_user.role.lower() != "mentor":
+        # Allow admin users with is_mentor flag
+        if current_user.role.lower() == "admin":
+            try:
+                admin_supabase = get_supabase_admin_client()
+                mentor_flag = admin_supabase.table("users").select("is_mentor").eq("id", str(current_user.user_id)).limit(1).execute()
+                if mentor_flag.data and mentor_flag.data[0].get("is_mentor"):
+                    return current_user
+            except Exception as e:
+                print(f"[Mentor Dashboard] Mentor flag lookup failed: {e}")
         raise HTTPException(status_code=403, detail="Mentor access required")
     return current_user
 

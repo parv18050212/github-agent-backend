@@ -2,7 +2,7 @@
 Team Management Router - Phase 2
 Handles all team CRUD operations and team-related endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, BackgroundTasks
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -58,7 +58,7 @@ async def list_teams(
         *,
         batches!inner(id, name, semester, year),
         students(count),
-        projects!projects_teams_fk(id, total_score, status, last_analyzed_at),
+        projects!projects_teams_fk(id, repo_url, total_score, status, last_analyzed_at),
         team_members:projects!projects_teams_fk(team_members(count))
         """,
         count="exact"
@@ -91,20 +91,49 @@ async def list_teams(
              query = query.in_("id", assigned_team_ids)
             
     else:
-        # Admins: require either batch_id or mentor_id (for viewing mentor's teams)
-        if mentor_id:
-            # Admin viewing a specific mentor's teams - no batch_id required
-            query = query.eq("mentor_id", str(mentor_id))
-        elif batch_id:
-            # Admin viewing teams in a batch
-            query = query.eq("batch_id", str(batch_id))
+        # Admins with is_mentor can see their own assigned teams when no filters provided
+        if not batch_id and not mentor_id:
+            try:
+                mentor_flag = supabase.table("users").select("is_mentor").eq("id", str(current_user.user_id)).limit(1).execute()
+                if mentor_flag.data and mentor_flag.data[0].get("is_mentor"):
+                    assignments = supabase.table("mentor_team_assignments")\
+                        .select("team_id")\
+                        .eq("mentor_id", str(current_user.user_id))\
+                        .execute()
+
+                    assigned_team_ids = [a["team_id"] for a in assignments.data] if assignments.data else []
+                    if not assigned_team_ids:
+                        query = query.eq("id", "00000000-0000-0000-0000-000000000000")
+                    else:
+                        query = query.in_("id", assigned_team_ids)
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="batch_id or mentor_id is required for admin users"
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                print(f"[Teams API] Mentor flag lookup error: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="batch_id or mentor_id is required for admin users"
+                )
         else:
-            # If no filters provided, defaulting to empty or error?
-            # Existing logic raised 400.
-            raise HTTPException(
-                status_code=400,
-                detail="batch_id or mentor_id is required for admin users"
-            )
+            # Admins: require either batch_id or mentor_id (for viewing mentor's teams)
+            if mentor_id:
+                # Admin viewing a specific mentor's teams - no batch_id required
+                query = query.eq("mentor_id", str(mentor_id))
+            elif batch_id:
+                # Admin viewing teams in a batch
+                query = query.eq("batch_id", str(batch_id))
+            else:
+                # If no filters provided, defaulting to empty or error?
+                # Existing logic raised 400.
+                raise HTTPException(
+                    status_code=400,
+                    detail="batch_id or mentor_id is required for admin users"
+                )
     
     # Apply filters
     # Special handling for "unassigned" status - filter by mentor_id IS NULL
@@ -164,8 +193,8 @@ async def list_teams(
             # Cache miss - fetch all mentors and cache
             admin_supabase = get_supabase_admin_client()
             all_mentors = admin_supabase.table("users").select(
-                "id, full_name, email"
-            ).eq("role", "mentor").execute()
+                "id, full_name, email, role, is_mentor"
+            ).or_("role.eq.mentor,is_mentor.eq.true").execute()
             
             mentor_lookup = {
                 str(m["id"]): m.get("full_name") or m.get("email") 
@@ -202,7 +231,7 @@ async def create_team(
     
     Creates team with students and optionally links to a project.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify batch exists
     batch_response = supabase.table("batches").select("id").eq("id", str(team_data.batch_id)).execute()
@@ -220,7 +249,14 @@ async def create_team(
         "student_count": len(team_data.students) if team_data.students else 0
     }
     
-    team_response = supabase.table("teams").insert(team_insert).execute()
+    try:
+        team_response = supabase.table("teams").insert(team_insert).execute()
+    except Exception as e:
+        # Handle unique constraint for (batch_id, team_name)
+        msg = str(e)
+        if "unique_team_in_batch" in msg or "duplicate key" in msg:
+            raise HTTPException(status_code=409, detail="A team with this name already exists in the selected batch")
+        raise
     
     if not team_response.data:
         raise HTTPException(status_code=500, detail="Failed to create team")
@@ -235,7 +271,6 @@ async def create_team(
             "team_id": team_id,
             "batch_id": str(team_data.batch_id),
             "repo_url": team_data.repo_url,
-            "description": team_data.description or "",
             "status": "pending"
         }
         
@@ -246,6 +281,33 @@ async def create_team(
             supabase.table("teams").update({
                 "project_id": common_id
             }).eq("id", team_id).execute()
+
+            # Auto-queue analysis for newly created team
+            try:
+                from src.api.backend.crud import AnalysisJobCRUD, ProjectCRUD
+                # Create analysis job
+                job = AnalysisJobCRUD.create_job(UUID(common_id))
+                job_id = job.get("id") if job else None
+
+                # Update project status to queued
+                ProjectCRUD.update_project_status(UUID(common_id), "queued")
+
+                # Try to enqueue Celery task if available
+                try:
+                    from celery_worker import analyze_repository_task
+                    task = analyze_repository_task.delay(
+                        project_id=common_id,
+                        job_id=str(job_id),
+                        repo_url=team_data.repo_url,
+                        team_name=team_data.name
+                    )
+                    supabase.table('analysis_jobs').update({
+                        'metadata': {'celery_task_id': task.id}
+                    }).eq('id', str(job_id)).execute()
+                except Exception as celery_error:
+                    print(f"⚠ Celery queueing failed for new team: {celery_error}")
+            except Exception as analysis_error:
+                print(f"⚠ Auto-analysis setup failed for new team: {analysis_error}")
     
     # Create students
     if team_data.students:
@@ -296,11 +358,16 @@ async def assign_team_to_mentor(
     team = team_response.data[0]
 
     # Verify mentor exists
-    mentor_response = supabase.table("users").select("id, email, full_name").eq(
+    mentor_response = supabase.table("users").select("id, email, full_name, role, is_mentor").eq(
         "id", str(assignment.mentor_id)
-    ).eq("role", "mentor").execute()
+    ).execute()
 
     if not mentor_response.data:
+        raise HTTPException(status_code=404, detail="Mentor not found")
+
+    mentor = mentor_response.data[0]
+    is_valid_mentor = mentor.get("role") == "mentor" or mentor.get("is_mentor") is True
+    if not is_valid_mentor:
         raise HTTPException(status_code=404, detail="Mentor not found")
 
     # Update team mentor_id
@@ -321,7 +388,6 @@ async def assign_team_to_mentor(
             "assigned_by": str(current_user.user_id)
         }).execute()
 
-    mentor = mentor_response.data[0]
     mentor_name = mentor.get("full_name") or mentor.get("email") or "mentor"
 
     return MessageResponse(
@@ -353,7 +419,7 @@ async def bulk_import_teams_with_mentors(
     Columns: Team Number, Team Name, Project Name, Github Link, etc.
     Maps: Team Name -> team_name, Github Link -> repo_url
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify batch exists
     batch_response = supabase.table("batches").select("id, start_date").eq("id", str(batch_id)).execute()
@@ -428,7 +494,7 @@ async def bulk_import_teams_with_mentors(
     created_teams = []
     
     # Get all mentors for email lookup
-    mentors_response = supabase.table("users").select("id, email").eq("role", "mentor").execute()
+    mentors_response = supabase.table("users").select("id, email, role, is_mentor").or_("role.eq.mentor,is_mentor.eq.true").execute()
     mentor_map = {m["email"]: m["id"] for m in mentors_response.data}
     
     for row_num, row in enumerate(rows, start=2):  # Start at 2 (header is row 1)
@@ -590,7 +656,7 @@ async def bulk_upload_teams(
     CSV Format:
     teamName,repoUrl,description,student1Name,student1Email,student2Name,student2Email,...
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify batch exists
     batch_response = supabase.table("batches").select("id").eq("id", str(batch_id)).execute()
@@ -747,11 +813,16 @@ async def get_team(
     
     # Check authorization
     if current_user.role == "mentor":
-        if team.get("mentor_id") != str(current_user.user_id):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: You are not assigned to this team"
-            )
+        mentor_id = str(current_user.user_id)
+        if team.get("mentor_id") != mentor_id:
+            assignment = supabase.table("mentor_team_assignments").select("id").eq(
+                "mentor_id", mentor_id
+            ).eq("team_id", str(team_id)).limit(1).execute()
+            if not assignment.data:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied: You are not assigned to this team"
+                )
     
     # Fetch team members if project exists
     team_members = []
@@ -788,7 +859,7 @@ async def update_team(
     
     Allows updating team name, description, status, and health status.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Check if team exists
     existing_team = supabase.table("teams").select("id").eq("id", str(team_id)).execute()
@@ -841,7 +912,8 @@ async def delete_team(
     
     Cascades to delete students, project, and assignments.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
+    print(f"[Teams API] delete_team called for team_id={team_id}")
     
     # Check if team exists
     existing_team = supabase.table("teams").select("id, project_id").eq("id", str(team_id)).execute()
@@ -849,7 +921,10 @@ async def delete_team(
         raise HTTPException(status_code=404, detail="Team not found")
     
     # Delete team (cascade will handle students and assignments)
-    supabase.table("teams").delete().eq("id", str(team_id)).execute()
+    delete_response = supabase.table("teams").delete().eq("id", str(team_id)).execute()
+    delete_error = getattr(delete_response, "error", None)
+    if delete_error:
+        raise HTTPException(status_code=500, detail=f"Failed to delete team: {delete_error}")
     
     return MessageResponse(
         success=True,
@@ -881,11 +956,16 @@ async def get_team_progress(
     
     # Check authorization
     if current_user.role == "mentor":
-        if team.get("mentor_id") != str(current_user.user_id):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: You are not assigned to this team"
-            )
+        mentor_id = str(current_user.user_id)
+        if team.get("mentor_id") != mentor_id:
+            assignment = supabase.table("mentor_team_assignments").select("id").eq(
+                "mentor_id", mentor_id
+            ).eq("team_id", str(team_id)).limit(1).execute()
+            if not assignment.data:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied: You are not assigned to this team"
+                )
     
     # Get all snapshots for this team
     snapshots_response = supabase.table("analysis_snapshots").select(
@@ -939,8 +1019,13 @@ async def update_student_grades(
     
     # Check permission
     if current_user.role == "mentor":
-        if str(team.get("mentor_id")) != str(current_user.user_id):
-            raise HTTPException(status_code=403, detail="Not authorized to grade this team")
+        mentor_id = str(current_user.user_id)
+        if str(team.get("mentor_id")) != mentor_id:
+            assignment = supabase.table("mentor_team_assignments").select("id").eq(
+                "mentor_id", mentor_id
+            ).eq("team_id", str(team_id)).limit(1).execute()
+            if not assignment.data:
+                raise HTTPException(status_code=403, detail="Not authorized to grade this team")
     
     # Verify all students belong to this team
     student_ids = [str(g.student_id) for g in grades]
@@ -1007,6 +1092,7 @@ async def update_student_grades(
 async def analyze_team(
     team_id: UUID,
     force: bool = Query(False, description="Force re-analysis (admin only)"),
+    background_tasks: BackgroundTasks = None,
     current_user: AuthUser = Depends(get_current_user)
 ):
     """
@@ -1071,6 +1157,42 @@ async def analyze_team(
         "status": "queued"
     }).eq("id", project_id).execute()
     
+    # Queue task in the background to return fast
+    def _queue_analysis_job():
+        celery_queued = False
+        try:
+            from celery_worker import analyze_repository_task
+            task = analyze_repository_task.delay(
+                project_id=str(project_id),
+                job_id=str(job["id"]),
+                repo_url=project_data.get("repo_url"),
+                team_name=team.get("team_name")
+            )
+            admin_supabase = get_supabase_admin_client()
+            admin_supabase.table('analysis_jobs').update({
+                'metadata': {'celery_task_id': task.id}
+            }).eq('id', str(job["id"])).execute()
+            celery_queued = True
+        except Exception as celery_error:
+            print(f"⚠ Celery queueing failed: {celery_error}")
+
+        if not celery_queued:
+            try:
+                from src.api.backend.background import run_analysis_job
+                run_analysis_job(
+                    project_id=str(project_id),
+                    job_id=str(job["id"]),
+                    repo_url=project_data.get("repo_url"),
+                    team_name=team.get("team_name")
+                )
+            except Exception as fallback_error:
+                print(f"⚠ Fallback analysis failed: {fallback_error}")
+
+    if background_tasks is not None:
+        background_tasks.add_task(_queue_analysis_job)
+    else:
+        _queue_analysis_job()
+
     return AnalysisJobResponse(
         job_id=job["id"],
         project_id=project_id,

@@ -3,6 +3,7 @@ Authentication Router
 Handles user authentication, profile management, and role verification
 """
 from fastapi import APIRouter, HTTPException, Depends, status
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -154,44 +155,63 @@ async def get_current_user_profile(current_user: AuthUser = Depends(get_current_
     from ..utils.cache import cache, RedisCache
     
     user_id = str(current_user.user_id)
+    admin_client = get_supabase_admin_client()
     
     # Check cache first
     cache_key = f"auth:role:{user_id}"
     cached_role = cache.get(cache_key)
-    
+    fresh_metadata = {}
+    admin_user_created_at = None
+    admin_user_avatar = None
+
+    # Always try to fetch admin user metadata (needed for is_mentor)
+    try:
+        admin_user = admin_client.auth.admin.get_user_by_id(user_id)
+
+        if admin_user and admin_user.user:
+            fresh_metadata = admin_user.user.app_metadata or {}
+            admin_user_created_at = admin_user.user.created_at
+            user_metadata = admin_user.user.user_metadata or {}
+            admin_user_avatar = user_metadata.get("avatar_url") or user_metadata.get("picture")
+        else:
+            print(f"[Auth] No admin user data for {user_id}")
+    except Exception as e:
+        print(f"[Auth] Admin API error: {e}")
+
     if cached_role:
         # Use cached role
         role = cached_role
     else:
         # Cache miss - fetch fresh role from Admin API
-        role = current_user.role  # Fallback
-        
-        try:
-            admin_client = get_supabase_admin_client()
-            admin_user = admin_client.auth.admin.get_user_by_id(user_id)
-            
-            if admin_user and admin_user.user:
-                fresh_metadata = admin_user.user.app_metadata or {}
-                role = fresh_metadata.get("role") or current_user.role or "mentor"
-                print(f"[Auth] Fresh role from Admin API: {role} (app_metadata: {fresh_metadata})")
-            else:
-                print(f"[Auth] No admin user data for {user_id}")
-        except Exception as e:
-            print(f"[Auth] Admin API error: {e}")
-            # Keep the role from current_user as fallback
-        
+        role = fresh_metadata.get("role") or current_user.role or "mentor"
+        print(f"[Auth] Fresh role from Admin API: {role} (app_metadata: {fresh_metadata})")
+
         # Cache the role for 5 minutes
         cache.set(cache_key, role, RedisCache.TTL_MEDIUM)
     
     print(f"[Auth] Final role for {current_user.email}: {role}")
     
+    # Check if user has mentor access (app_metadata.is_mentor OR users.is_mentor OR mentors table)
+    is_mentor = bool(fresh_metadata.get("is_mentor"))
+    try:
+        if not is_mentor:
+            mentor_flag = admin_client.table("users").select("is_mentor").eq("id", user_id).limit(1).execute()
+            if mentor_flag.data:
+                is_mentor = bool(mentor_flag.data[0].get("is_mentor"))
+        if not is_mentor:
+            mentor_result = admin_client.table("mentors").select("id").eq("user_id", user_id).limit(1).execute()
+            is_mentor = bool(mentor_result.data)
+    except Exception as e:
+        print(f"[Auth] Mentor lookup error: {e}")
+
     return UserProfileResponse(
         id=current_user.user_id,
         email=current_user.email,
         role=role,
         full_name=current_user.full_name,
-        avatar_url=None,
-        created_at=None
+        avatar_url=admin_user_avatar,
+        created_at=admin_user_created_at or datetime.now(timezone.utc),
+        is_mentor=is_mentor
     )
 
 

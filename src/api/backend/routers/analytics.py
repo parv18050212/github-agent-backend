@@ -118,6 +118,31 @@ def _extract_language_breakdown(report_json: Dict[str, Any]) -> List[Dict[str, A
                     "color": _language_color(name)
                 })
 
+    if not breakdown:
+        stack = report_json.get("stack", [])
+        if isinstance(stack, str):
+            stack = [s.strip() for s in stack.split(",") if s.strip()]
+
+        if isinstance(stack, list) and stack:
+            language_keywords = [
+                "python", "javascript", "typescript", "java", "go", "rust",
+                "c++", "cpp", "c#", "php", "ruby", "swift", "kotlin"
+            ]
+            language_candidates = [
+                item for item in stack
+                if isinstance(item, str) and any(k in item.lower() for k in language_keywords)
+            ]
+            selected = language_candidates or [item for item in stack if isinstance(item, str)]
+
+            if selected:
+                pct = round(100 / len(selected), 2)
+                for name in selected:
+                    breakdown.append({
+                        "name": name,
+                        "value": pct,
+                        "color": _language_color(name)
+                    })
+
     return breakdown
 
 
@@ -151,10 +176,14 @@ async def verify_team_access(team_id: str, current_user: AuthUser, supabase):
     # Mentor can only access assigned teams
     if role == "mentor":
         if str(team.get("mentor_id")) != user_id:
-            raise HTTPException(
-                status_code=403, 
-                detail="Access denied. You can only view teams assigned to you."
-            )
+            assignment = supabase.table("mentor_team_assignments").select("id").eq(
+                "mentor_id", user_id
+            ).eq("team_id", team_id).limit(1).execute()
+            if not assignment.data:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Access denied. You can only view teams assigned to you."
+                )
         return team
     
     raise HTTPException(status_code=403, detail="Access denied")
@@ -639,7 +668,7 @@ async def get_team_commits(
     Get commit history for a team with optional filters.
     Admin or assigned mentor only.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify access
     team = await verify_team_access(teamId, current_user, supabase)
@@ -761,7 +790,7 @@ async def get_team_file_tree(
     Get repository file tree structure.
     Admin or assigned mentor only.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify access
     team = await verify_team_access(teamId, current_user, supabase)
@@ -864,7 +893,7 @@ async def get_team_commit_diff(
     """
     Get detailed commit information including patches/diffs from GitHub.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Verify access
     team = await verify_team_access(teamId, current_user, supabase)

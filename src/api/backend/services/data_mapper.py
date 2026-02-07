@@ -206,6 +206,7 @@ class DataMapper:
                 report_json = {
                     "scores": report.get("scores", {}),
                     "stack": report.get("stack", []),
+                    "languages": report.get("languages", {}),
                     "files": report.get("files", [])[:30],  # Limit to avoid size issues
                     "judge": judge,
                     "team": report.get("team", {}),

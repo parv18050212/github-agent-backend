@@ -21,7 +21,7 @@ COPY . .
 RUN mkdir -p /app/reports /app/logs
 
 # Expose FastAPI port
-EXPOSE 8000
+EXPOSE 3000
 
 # Default command (will be overridden by docker-compose)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]

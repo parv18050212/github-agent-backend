@@ -44,7 +44,7 @@ async def list_mentors(
         created_at
         """,
         count="exact"
-    ).eq("role", "mentor")
+    ).or_("role.eq.mentor,is_mentor.eq.true")
     
     # Apply filters
     if status:
@@ -159,8 +159,8 @@ async def get_mentor(
     
     # Get mentor user
     mentor_response = supabase.table("users").select(
-        "id, email, full_name, avatar_url, status, role, created_at"
-    ).eq("id", str(mentor_id)).eq("role", "mentor").execute()
+        "id, email, full_name, avatar_url, status, role, created_at, is_mentor"
+    ).eq("id", str(mentor_id)).or_("role.eq.mentor,is_mentor.eq.true").execute()
     
     if not mentor_response.data:
         raise HTTPException(status_code=404, detail="Mentor not found")
@@ -234,7 +234,7 @@ async def update_mentor(
     supabase = get_supabase()
     
     # Check if mentor exists
-    existing_mentor = supabase.table("users").select("id").eq("id", str(mentor_id)).eq("role", "mentor").execute()
+    existing_mentor = supabase.table("users").select("id, role, is_mentor").eq("id", str(mentor_id)).or_("role.eq.mentor,is_mentor.eq.true").execute()
     
     if not existing_mentor.data:
         raise HTTPException(status_code=404, detail="Mentor not found")
@@ -281,7 +281,7 @@ async def delete_mentor(
     supabase = get_supabase()
     
     # Check if mentor exists
-    existing_mentor = supabase.table("users").select("id").eq("id", str(mentor_id)).eq("role", "mentor").execute()
+    existing_mentor = supabase.table("users").select("id, role, is_mentor").eq("id", str(mentor_id)).or_("role.eq.mentor,is_mentor.eq.true").execute()
     
     if not existing_mentor.data:
         raise HTTPException(status_code=404, detail="Mentor not found")
