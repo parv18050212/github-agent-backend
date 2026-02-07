@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from time import perf_counter
-import json
 
 from ..middleware.auth import get_current_user, AuthUser
 from ..database import get_supabase, get_supabase_admin_client
@@ -73,7 +72,7 @@ async def get_mentor_dashboard(
     
     # Fetch teams with project data
     teams_response = supabase.table("teams").select(
-        "id, team_name, batch_id, health_status, projects!projects_teams_fk(analysis_result,created_at)"
+        "id, team_name, batch_id, health_status, projects!projects_teams_fk(total_score,last_analyzed_at,analyzed_at,created_at)"
     ).in_("id", team_ids).execute()
     
     teams = teams_response.data or []
@@ -99,13 +98,7 @@ async def get_mentor_dashboard(
             if isinstance(project, list):
                 project = project[0] if project else None
             if project:
-                analysis = project.get("analysis_result", {})
-                if isinstance(analysis, str):
-                    try:
-                        analysis = json.loads(analysis)
-                    except:
-                        analysis = {}
-                score = analysis.get("totalScore", 0)
+                score = project.get("total_score") or 0
                 if score > 0:
                     scores.append(score)
     
@@ -245,7 +238,7 @@ async def get_mentor_reports(
     
     # Fetch teams with projects
     query = supabase.table("teams").select(
-        "id, team_name, batch_id, health_status, projects!projects_teams_fk(analysis_result,created_at)"
+        "id, team_name, batch_id, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,last_analyzed_at,analyzed_at,created_at)"
     ).in_("id", team_ids)
     if batch_id:
         query = query.eq("batch_id", batch_id)
@@ -265,16 +258,9 @@ async def get_mentor_reports(
         if isinstance(project, list):
             project = project[0] if project else None
         
-        analysis = {}
-        if project:
-            analysis = project.get("analysis_result", {})
-            if isinstance(analysis, str):
-                try:
-                    analysis = json.loads(analysis)
-                except:
-                    analysis = {}
-        
-        total_score = analysis.get("totalScore", 0)
+        total_score = (project or {}).get("total_score") or 0
+        quality_score = (project or {}).get("quality_score") or 0
+        security_score = (project or {}).get("security_score") or 0
         if total_score > 0:
             scores.append(total_score)
         
@@ -291,10 +277,12 @@ async def get_mentor_reports(
             "teamName": team.get("team_name"),
             "batchId": team.get("batch_id"),
             "totalScore": total_score,
-            "qualityScore": analysis.get("qualityScore", 0),
-            "securityScore": analysis.get("securityScore", 0),
+            "qualityScore": quality_score,
+            "securityScore": security_score,
             "healthStatus": health,
-            "lastAnalyzed": project.get("created_at") if project else None
+            "lastAnalyzed": (project or {}).get("last_analyzed_at")
+            or (project or {}).get("analyzed_at")
+            or (project or {}).get("created_at")
         })
     
     avg_score = sum(scores) / len(scores) if scores else 0
@@ -346,7 +334,7 @@ async def get_mentor_team_report(
     
     # Get team with project
     team_response = supabase.table("teams").select(
-        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(analysis_result,created_at)"
+        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,originality_score,architecture_score,documentation_score,last_analyzed_at,analyzed_at,created_at)"
     ).eq("id", team_id).execute()
     
     if not team_response.data:
@@ -357,14 +345,12 @@ async def get_mentor_team_report(
     if isinstance(project, list):
         project = project[0] if project else None
     
-    analysis = {}
-    if project:
-        analysis = project.get("analysis_result", {})
-        if isinstance(analysis, str):
-            try:
-                analysis = json.loads(analysis)
-            except:
-                analysis = {}
+    total_score = (project or {}).get("total_score") or 0
+    quality_score = (project or {}).get("quality_score") or 0
+    security_score = (project or {}).get("security_score") or 0
+    originality_score = (project or {}).get("originality_score") or 0
+    architecture_score = (project or {}).get("architecture_score") or 0
+    documentation_score = (project or {}).get("documentation_score") or 0
     
     # Get students
     students_response = supabase.table("students").select(
@@ -379,12 +365,12 @@ async def get_mentor_team_report(
         "repoUrl": team.get("repo_url"),
         "generatedAt": datetime.utcnow().isoformat(),
         "analysis": {
-            "totalScore": analysis.get("totalScore", 0),
-            "qualityScore": analysis.get("qualityScore", 0),
-            "securityScore": analysis.get("securityScore", 0),
-            "originalityScore": analysis.get("originalityScore", 0),
-            "architectureScore": analysis.get("architectureScore", 0),
-            "documentationScore": analysis.get("documentationScore", 0)
+            "totalScore": total_score,
+            "qualityScore": quality_score,
+            "securityScore": security_score,
+            "originalityScore": originality_score,
+            "architectureScore": architecture_score,
+            "documentationScore": documentation_score
         },
         "students": [
             {
@@ -399,7 +385,9 @@ async def get_mentor_team_report(
             for s in students
         ],
         "healthStatus": team.get("health_status", "on_track"),
-        "lastAnalyzedAt": project.get("created_at") if project else None
+        "lastAnalyzedAt": (project or {}).get("last_analyzed_at")
+        or (project or {}).get("analyzed_at")
+        or (project or {}).get("created_at")
     }
 
     cache.set(cache_key, response, RedisCache.TTL_SHORT)
