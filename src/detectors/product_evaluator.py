@@ -56,9 +56,9 @@ def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
         """
 
         # 3. Call API
-        print("      🚀 Sending to Gemini 2.0 Flash...")
+        print("      🚀 Sending to Gemini 2.5 Flash...")
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
