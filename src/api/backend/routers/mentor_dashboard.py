@@ -7,11 +7,13 @@ All endpoints require mentor role and filter data by the logged-in mentor's assi
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from time import perf_counter
 import json
 
 from ..middleware.auth import get_current_user, AuthUser
 from ..database import get_supabase, get_supabase_admin_client
 from ..crud import TeamCRUD
+from ..utils.cache import cache, RedisCache
 from ..schemas import (
     LeaderboardResponse,
     LeaderboardItem,
@@ -47,8 +49,14 @@ async def get_mentor_dashboard(
     Get mentor's dashboard summary.
     Returns overview of assigned teams, their statuses, and key metrics.
     """
+    start_time = perf_counter()
     supabase = get_supabase()
     mentor_id = str(current_user.user_id)
+
+    cache_key = f"hackeval:mentor:dashboard:{mentor_id}"
+    cached_response = cache.get(cache_key)
+    if cached_response:
+        return cached_response
     
     # Get assigned team IDs
     team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
@@ -65,7 +73,7 @@ async def get_mentor_dashboard(
     
     # Fetch teams with project data
     teams_response = supabase.table("teams").select(
-        "*, projects!projects_teams_fk(*)"
+        "id, team_name, batch_id, health_status, projects!projects_teams_fk(analysis_result,created_at)"
     ).in_("id", team_ids).execute()
     
     teams = teams_response.data or []
@@ -103,7 +111,7 @@ async def get_mentor_dashboard(
     
     avg_score = sum(scores) / len(scores) if scores else 0
     
-    return {
+    response = {
         "totalTeams": len(teams),
         "teamsOnTrack": on_track,
         "teamsAtRisk": at_risk,
@@ -111,6 +119,10 @@ async def get_mentor_dashboard(
         "averageScore": round(avg_score, 2),
         "recentActivity": []  # Can be extended to show recent commits, etc.
     }
+
+    cache.set(cache_key, response, RedisCache.TTL_SHORT)
+    print(f"[Mentor Dashboard] /dashboard completed in {perf_counter() - start_time:.3f}s")
+    return response
 
 
 @router.get("/leaderboard", response_model=LeaderboardResponse)
@@ -205,8 +217,14 @@ async def get_mentor_reports(
     """
     Get aggregated report for mentor's assigned teams.
     """
+    start_time = perf_counter()
     supabase = get_supabase()
     mentor_id = str(current_user.user_id)
+
+    cache_key = f"hackeval:mentor:reports:{mentor_id}:{batch_id or 'all'}"
+    cached_response = cache.get(cache_key)
+    if cached_response:
+        return cached_response
     
     # Get assigned team IDs
     team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
@@ -226,7 +244,9 @@ async def get_mentor_reports(
         }
     
     # Fetch teams with projects
-    query = supabase.table("teams").select("*, projects!projects_teams_fk(*)").in_("id", team_ids)
+    query = supabase.table("teams").select(
+        "id, team_name, batch_id, health_status, projects!projects_teams_fk(analysis_result,created_at)"
+    ).in_("id", team_ids)
     if batch_id:
         query = query.eq("batch_id", batch_id)
     
@@ -279,7 +299,7 @@ async def get_mentor_reports(
     
     avg_score = sum(scores) / len(scores) if scores else 0
     
-    return {
+    response = {
         "mentorId": mentor_id,
         "generatedAt": datetime.utcnow().isoformat(),
         "teams": teams_data,
@@ -292,6 +312,10 @@ async def get_mentor_reports(
         }
     }
 
+    cache.set(cache_key, response, RedisCache.TTL_SHORT)
+    print(f"[Mentor Dashboard] /reports completed in {perf_counter() - start_time:.3f}s")
+    return response
+
 
 @router.get("/teams/{team_id}/report")
 async def get_mentor_team_report(
@@ -302,8 +326,14 @@ async def get_mentor_team_report(
     Get detailed report for a specific team.
     Mentor must be assigned to this team.
     """
+    start_time = perf_counter()
     supabase = get_supabase()
     mentor_id = str(current_user.user_id)
+
+    cache_key = f"hackeval:mentor:team_report:{mentor_id}:{team_id}"
+    cached_response = cache.get(cache_key)
+    if cached_response:
+        return cached_response
     
     # Verify mentor is assigned to this team
     team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
@@ -315,7 +345,9 @@ async def get_mentor_team_report(
         )
     
     # Get team with project
-    team_response = supabase.table("teams").select("*, projects!projects_teams_fk(*)").eq("id", team_id).execute()
+    team_response = supabase.table("teams").select(
+        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(analysis_result,created_at)"
+    ).eq("id", team_id).execute()
     
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -335,10 +367,12 @@ async def get_mentor_team_report(
                 analysis = {}
     
     # Get students
-    students_response = supabase.table("students").select("*").eq("team_id", team_id).execute()
+    students_response = supabase.table("students").select(
+        "id, name, email, github_username, mentor_grade, mentor_feedback, grading_details"
+    ).eq("team_id", team_id).execute()
     students = students_response.data or []
     
-    return {
+    response = {
         "teamId": team_id,
         "teamName": team.get("team_name"),
         "batchId": team.get("batch_id"),
@@ -367,6 +401,10 @@ async def get_mentor_team_report(
         "healthStatus": team.get("health_status", "on_track"),
         "lastAnalyzedAt": project.get("created_at") if project else None
     }
+
+    cache.set(cache_key, response, RedisCache.TTL_SHORT)
+    print(f"[Mentor Dashboard] /teams/{team_id}/report completed in {perf_counter() - start_time:.3f}s")
+    return response
 
 
 # Grading schemas

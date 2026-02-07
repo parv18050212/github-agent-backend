@@ -865,6 +865,13 @@ class TeamCRUD:
         Get all team IDs assigned to a mentor using hybrid strategy.
         Checks both 'teams.mentor_id' (legacy) and 'mentor_team_assignments' (new).
         """
+        from src.api.backend.utils.cache import cache, RedisCache
+
+        cache_key = f"hackeval:mentor:team_ids:{mentor_id}"
+        cached_ids = cache.get(cache_key)
+        if cached_ids:
+            return cached_ids
+
         supabase = get_supabase_client()
         team_ids = set()
         
@@ -884,7 +891,9 @@ class TeamCRUD:
         except Exception as e:
             print(f"[TeamCRUD] Warning fetching mentor assignments: {e}")
             
-        return list(team_ids)
+        team_id_list = list(team_ids)
+        cache.set(cache_key, team_id_list, RedisCache.TTL_SHORT)
+        return team_id_list
 
 
 class ProjectCommentCRUD:
