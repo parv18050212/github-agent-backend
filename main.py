@@ -25,7 +25,8 @@ from src.api.backend.routers import (
     analytics,
     reports,
     admin_users,
-    mentor_dashboard
+    mentor_dashboard,
+    alerts
 )
 
 # Create FastAPI app
@@ -74,6 +75,7 @@ app.include_router(analytics.router)  # Team Analytics (Phase 5)
 app.include_router(reports.router)  # Reports & Analytics (Phase 5)
 app.include_router(admin_users.router)  # Admin User Management (Admin Portal)
 app.include_router(mentor_dashboard.router)  # Mentor Dashboard (Mentor-only endpoints)
+app.include_router(alerts.router)  # Alerts & Notifications
 
 # Real-time Celery sync and historical data tracking
 from src.api.backend.routers import analysis_status, analysis_history

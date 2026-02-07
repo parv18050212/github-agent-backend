@@ -334,7 +334,7 @@ async def get_mentor_team_report(
     
     # Get team with project
     team_response = supabase.table("teams").select(
-        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,originality_score,engineering_score,organization_score,documentation_score,last_analyzed_at,analyzed_at,created_at)"
+        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,originality_score,engineering_score,organization_score,documentation_score,last_analyzed_at,analyzed_at,created_at,verdict,ai_pros,ai_cons)"
     ).eq("id", team_id).execute()
     
     if not team_response.data:
@@ -371,6 +371,11 @@ async def get_mentor_team_report(
             "originalityScore": originality_score,
             "architectureScore": architecture_score,
             "documentationScore": documentation_score
+        },
+        "aiSummary": {
+            "verdict": (project or {}).get("verdict"),
+            "pros": (project or {}).get("ai_pros"),
+            "cons": (project or {}).get("ai_cons")
         },
         "students": [
             {
