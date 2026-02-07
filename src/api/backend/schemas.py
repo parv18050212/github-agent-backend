@@ -587,8 +587,7 @@ class StudentResponse(BaseModel):
     lines_added: int
     lines_deleted: int
     last_commit_date: Optional[datetime] = None
-    mentor_grade: Optional[float] = None
-    mentor_feedback: Optional[str] = None
+    grading_details: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -605,8 +604,9 @@ class StudentListResponse(BaseModel):
 class StudentGradeRequest(BaseModel):
     """Request to grade a student"""
     student_id: UUID
-    mentor_grade: Optional[float] = Field(None, ge=0, le=100)
-    mentor_feedback: Optional[str] = None
+    admin_grade: Optional[float] = Field(None, ge=0, le=100)
+    admin_feedback: Optional[str] = None
+    grading_details: Optional[Dict[str, Any]] = None
 
 
 class MentorAssignmentCreateRequest(BaseModel):

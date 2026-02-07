@@ -259,14 +259,15 @@ async def get_batch_report(
                 writer.writerow(row)
             else:
                 for student in students:
+                    round_one = (student.get("grading_details") or {}).get("round_1") or {}
                     row = base_row.copy()
                     row.update({
                         "Student Name": student.get("name"),
                         "Student Email": student.get("email"),
                         "Admin Grade": student.get("admin_grade", ""),
                         "Admin Feedback": student.get("admin_feedback", ""),
-                        "Mentor Grade": student.get("mentor_grade", ""),
-                        "Mentor Feedback": student.get("mentor_feedback", "")
+                        "Mentor Grade": round_one.get("grade", ""),
+                        "Mentor Feedback": round_one.get("feedback", "")
                     })
                     writer.writerow(row)
             

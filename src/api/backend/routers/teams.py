@@ -1047,16 +1047,18 @@ async def update_student_grades(
             update_data = {}
             if current_user.role == "admin":
                 # Admin grading
-                if grade.mentor_grade is not None:
-                    update_data["admin_grade"] = grade.mentor_grade
-                if grade.mentor_feedback is not None:
-                    update_data["admin_feedback"] = grade.mentor_feedback
+                if grade.admin_grade is not None:
+                    update_data["admin_grade"] = grade.admin_grade
+                if grade.admin_feedback is not None:
+                    update_data["admin_feedback"] = grade.admin_feedback
             else:
                 # Mentor grading
-                if grade.mentor_grade is not None:
-                    update_data["mentor_grade"] = grade.mentor_grade
-                if grade.mentor_feedback is not None:
-                    update_data["mentor_feedback"] = grade.mentor_feedback
+                if grade.grading_details:
+                    current_student = supabase.table("students").select("grading_details").eq("id", str(grade.student_id)).execute()
+                    if current_student.data:
+                        current_details = current_student.data[0].get("grading_details") or {}
+                        current_details.update(grade.grading_details)
+                        update_data["grading_details"] = current_details
             
             
             if update_data:
