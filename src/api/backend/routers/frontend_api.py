@@ -198,42 +198,50 @@ async def list_projects(
             cached_result = cache.get(cache_key)
             if cached_result:
                 return cached_result
-        
-        projects, _ = ProjectCRUD.list_projects()
-        
-        # Apply filters
+        from ..database import get_supabase_admin_client
+        supabase = get_supabase_admin_client()
+
+        query = supabase.table("projects").select(
+            "id, team_name, repo_url, status, total_score, quality_score, security_score, "
+            "originality_score, engineering_score, documentation_score, created_at"
+        )
+
         if status and status != "all":
-            projects = [p for p in projects if p.get("status") == status]
-        
+            query = query.eq("status", status)
+
         if search:
-            search_lower = search.lower()
-            projects = [p for p in projects 
-                       if search_lower in (p.get("team_name") or "").lower() 
-                       or search_lower in (p.get("repo_url") or "").lower()]
-        
-        # Sort
+                query = query.or_(f"team_name.ilike.%{search}%,repo_url.ilike.%{search}%")
+
         if sort == "score":
-            projects = sorted(projects, key=lambda x: x.get("total_score") or 0, reverse=True)
-        else:  # recent
-            projects = sorted(projects, key=lambda x: x.get("created_at") or "", reverse=True)
-        
-            # Batch fetch tech stacks and issues for all projects (fix N+1 query)
-            from ..database import get_supabase_admin_client
-            supabase = get_supabase_admin_client()
-        
+            query = query.order("total_score", desc=True)
+        else:
+            query = query.order("created_at", desc=True)
+
+        result = query.execute()
+        projects = result.data or []
+
         project_ids = [p["id"] for p in projects]
         if not project_ids:
             return []
         
         # Single query for all tech stacks
-        tech_response = supabase.table("tech_stack").select("*").in_("project_id", project_ids).execute()
+        tech_response = supabase.table("tech_stack").select("project_id, technology").in_("project_id", project_ids).execute()
         tech_map = {}
-        for tech in (tech_response.data or []):
-            pid = tech["project_id"]
+        for tech_item in (tech_response.data or []):
+            pid = tech_item["project_id"]
             if pid not in tech_map:
                 tech_map[pid] = []
-            tech_map[pid].append(tech)
-        
+            tech_map[pid].append(tech_item)
+
+        if tech:
+            projects = [
+                project for project in projects
+                if tech in [t.get("technology") for t in tech_map.get(project["id"], [])]
+            ]
+            project_ids = [p["id"] for p in projects]
+            if not project_ids:
+                return []
+
         # Single query for all issues (only if needed for security count)
         issues_response = supabase.table("issues").select("project_id, type").in_("project_id", project_ids).execute()
         issues_map = {}

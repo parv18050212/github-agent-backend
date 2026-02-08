@@ -186,6 +186,7 @@ class Team(TeamBase):
     health_status: str = "on_track"  # on_track, at_risk, critical
     risk_flags: Optional[List[str]] = []
     last_activity: Optional[datetime] = None
+    metadata: Optional[Dict[str, Any]] = {}
     created_at: datetime
     updated_at: datetime
     
