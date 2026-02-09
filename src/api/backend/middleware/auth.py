@@ -76,9 +76,14 @@ async def get_current_user(
 
             app_metadata = user.app_metadata or {}
             metadata_role = app_metadata.get("role") or user_metadata.get("role")
-            desired_role = metadata_role or "mentor"
+            existing_role = existing_user.get("role") if existing_user else None
+            desired_role = metadata_role if metadata_role else (existing_role if existing_user else "mentor")
 
-            desired_is_mentor = bool(app_metadata.get("is_mentor")) or desired_role == "mentor"
+            desired_is_mentor = bool(app_metadata.get("is_mentor"))
+            if metadata_role == "mentor":
+                desired_is_mentor = True
+            elif existing_user and existing_user.get("is_mentor"):
+                desired_is_mentor = True
 
             if existing_user:
                 update_fields = {}
@@ -86,9 +91,7 @@ async def get_current_user(
                     full_name = user_metadata.get("full_name") or user_metadata.get("name")
                     if full_name:
                         update_fields["full_name"] = full_name
-                if existing_user.get("role") is None:
-                    update_fields["role"] = desired_role
-                elif metadata_role and existing_user.get("role") != metadata_role:
+                if metadata_role and existing_user.get("role") != metadata_role:
                     update_fields["role"] = metadata_role
                 if desired_is_mentor and not existing_user.get("is_mentor"):
                     update_fields["is_mentor"] = True
@@ -134,7 +137,7 @@ async def get_current_user(
             # Fallback to token claims if admin API fails
             print(f"[Auth] Admin API error, falling back to token: {admin_err}")
             app_metadata = user.app_metadata or {}
-            role = app_metadata.get("role") or user_metadata.get("role") or "mentor"
+            role = app_metadata.get("role") or user_metadata.get("role") or "none"
         
         print(f"[Auth] Final role for {user.email}: {role}")
         

@@ -57,8 +57,8 @@ async def login(request: LoginRequest):
         user_metadata = user.user_metadata or {}
         app_metadata = user.app_metadata or {}
         
-        # Get role (default to 'mentor' if not set)
-        role = app_metadata.get("role") or user_metadata.get("role") or "mentor"
+        # Get role (do not default to mentor for existing revoked users)
+        role = app_metadata.get("role") or user_metadata.get("role")
         
         admin_client = get_supabase_admin_client()
 
@@ -68,12 +68,15 @@ async def login(request: LoginRequest):
             existing_user = admin_client.table("users").select("id, role, is_mentor").eq("id", user_id).limit(1).execute()
             existing_record = existing_user.data[0] if existing_user.data else None
 
-            desired_role = role
-            if existing_record and existing_record.get("role") == "admin":
+            existing_role = existing_record.get("role") if existing_record else None
+            desired_role = role if role else (existing_role if existing_record else "mentor")
+            if existing_record and existing_role == "admin":
                 desired_role = "admin"
 
             role = desired_role
-            desired_is_mentor = bool(app_metadata.get("is_mentor")) or desired_role == "mentor"
+            desired_is_mentor = bool(app_metadata.get("is_mentor"))
+            if role == "mentor":
+                desired_is_mentor = True
             if existing_record and existing_record.get("is_mentor") is True:
                 desired_is_mentor = True
 
@@ -82,10 +85,11 @@ async def login(request: LoginRequest):
 
             if existing_record:
                 update_fields = {
-                    "role": desired_role,
                     "is_mentor": desired_is_mentor,
                     "updated_at": now_iso
                 }
+                if role is not None and existing_role != role:
+                    update_fields["role"] = role
                 if profile_full_name:
                     update_fields["full_name"] = profile_full_name
                 admin_client.table("users").update(update_fields).eq("id", user_id).execute()
