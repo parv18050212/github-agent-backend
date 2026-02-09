@@ -39,7 +39,12 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-Instrumentator().instrument(app).expose(app)
+Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    should_respect_env_var=True,
+    excluded_handlers=["/metrics"],
+).instrument(app).expose(app)
 
 
 # CORS middleware
