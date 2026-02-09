@@ -39,6 +39,8 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+Instrumentator().instrument(app).expose(app)
+
 
 # CORS middleware
 cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
@@ -148,7 +150,6 @@ async def health_check():
 @app.on_event("startup")
 async def startup_event():
     """Run on application startup"""
-    Instrumentator().instrument(app).expose(app)
     print("\n" + "="*60)
     print("🚀 Repository Analysis API Starting...")
     print("="*60)
