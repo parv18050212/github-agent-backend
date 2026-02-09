@@ -899,6 +899,19 @@ async def bulk_import_teams_with_mentors(
                 "error": str(e)
             })
 
+    def _dedupe_by_key(items, key):
+        deduped = {}
+        for item in items:
+            item_key = item.get(key)
+            if item_key is None:
+                continue
+            deduped[item_key] = item
+        return list(deduped.values())
+
+    teams_payload = _dedupe_by_key(teams_payload, "id")
+    projects_payload = _dedupe_by_key(projects_payload, "id")
+    students_payload = _dedupe_by_key(students_payload, "email")
+
     # Batch write teams and projects
     try:
         if teams_payload:
@@ -1087,6 +1100,19 @@ async def bulk_upload_teams(
                 "error": str(e)
             })
     
+    def _dedupe_by_key(items, key):
+        deduped = {}
+        for item in items:
+            item_key = item.get(key)
+            if item_key is None:
+                continue
+            deduped[item_key] = item
+        return list(deduped.values())
+
+    teams_payload = _dedupe_by_key(teams_payload, "id")
+    projects_payload = _dedupe_by_key(projects_payload, "id")
+    students_payload = _dedupe_by_key(students_payload, "email")
+
     try:
         if teams_payload:
             for chunk in _chunk(teams_payload, 200):
