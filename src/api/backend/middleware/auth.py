@@ -86,7 +86,9 @@ async def get_current_user(
                     full_name = user_metadata.get("full_name") or user_metadata.get("name")
                     if full_name:
                         update_fields["full_name"] = full_name
-                if existing_user.get("role") is None and metadata_role:
+                if existing_user.get("role") is None:
+                    update_fields["role"] = desired_role
+                elif metadata_role and existing_user.get("role") != metadata_role:
                     update_fields["role"] = metadata_role
                 if desired_is_mentor and not existing_user.get("is_mentor"):
                     update_fields["is_mentor"] = True

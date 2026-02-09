@@ -1057,7 +1057,7 @@ class UserInfo(BaseModel):
     id: str
     email: str
     fullName: str
-    role: str
+    role: Optional[str] = None
     status: str
     lastLogin: Optional[str] = None
     createdAt: str
@@ -1073,7 +1073,7 @@ class UserListResponse(BaseModel):
 
 class UserRoleUpdateRequest(BaseModel):
     """User role update request"""
-    role: str = Field(..., pattern="^(admin|mentor)$")
+    role: Optional[str] = Field(None, pattern="^(admin|mentor)$")
 
 
 class UserRoleUpdateResponse(BaseModel):
