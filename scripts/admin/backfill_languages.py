@@ -17,7 +17,7 @@ def require_env(name: str) -> str:
 # Configuration
 SUPABASE_URL = require_env("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or require_env("SUPABASE_KEY")
-GITHUB_TOKEN = require_env("GITHUB_TOKEN")
+GITHUB_TOKEN = os.getenv("GH_API_KEY") or require_env("GITHUB_TOKEN")
 
 def get_repo_path(url: str) -> str:
     """Extract owner/repo from URL"""

@@ -373,9 +373,20 @@ class DataMapper:
                 batch_logger.warning(f"Failed to create analysis snapshot: {e}")
                 # Don't fail the whole save if snapshot creation fails
             
-            # 6. Invalidate cache for this project
+            # 6. Invalidate cache for this project and related team views
             try:
                 cache.invalidate_project(str(project_id))
+
+                # Also clear team-scoped caches (analytics/report endpoints)
+                from src.api.backend.database import get_supabase_admin_client
+                supabase = get_supabase_admin_client()
+                project_result = supabase.table("projects").select("team_id").eq("id", str(project_id)).execute()
+                if project_result.data and len(project_result.data) > 0:
+                    team_id = project_result.data[0].get("team_id")
+                    if team_id:
+                        cache.delete_pattern(f"analytics:{team_id}")
+                        cache.delete_pattern(f"report:team:{team_id}")
+
                 batch_logger.info(f"Cache invalidated for project {project_id}")
             except Exception as e:
                 batch_logger.warning(f"Failed to invalidate cache: {e}")

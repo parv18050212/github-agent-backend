@@ -288,6 +288,59 @@ def node_aggregator(ctx):
         "organization": struct.get("organization_score", 50),  # 50 if not analyzed
         "documentation": qual.get("documentation_score", 30)  # 30 base score
     }
+
+    # Apply a hard penalty for docs-only repositories (README-only, no code)
+    def _is_docs_only_repo(path: str) -> bool:
+        if not path or not os.path.exists(path):
+            return False
+
+        code_exts = [
+            ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".cpp", ".c",
+            ".cs", ".rs", ".php", ".rb", ".kt", ".swift", ".dart"
+        ]
+        code_files = list_files(path, ext_whitelist=code_exts)
+        if code_files:
+            return False
+
+        trivial_names = {
+            "readme", "readme.md", "readme.txt",
+            "license", "license.md", "license.txt",
+            ".gitignore", ".gitattributes", ".editorconfig",
+            "notice", "notice.txt"
+        }
+
+        exclude_dirs = {
+            ".git", ".github", "node_modules", "venv", ".venv", "env", "dist",
+            "build", "target", "bin", "obj", "__pycache__", "coverage"
+        }
+
+        total_files = 0
+        non_trivial = 0
+
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+            for name in files:
+                if name.startswith("."):
+                    continue
+                total_files += 1
+                lower = name.lower()
+                if lower in trivial_names or lower.endswith((".md", ".txt")):
+                    continue
+                non_trivial += 1
+
+        return total_files > 0 and non_trivial == 0
+
+    if _is_docs_only_repo(repo_path):
+        scores = {
+            "originality": 5,
+            "quality": 5,
+            "security": 5,
+            "effort": 0,
+            "implementation": 5,
+            "engineering": 5,
+            "organization": 5,
+            "documentation": 10
+        }
     
     # --- Viz ---
     output_dir = ctx.get("output_dir") or "."

@@ -708,6 +708,22 @@ async def bulk_import_teams_with_mentors(
     failed = 0
     errors = []
     created_teams = []
+
+    existing_team_rows = supabase.table("teams").select("id, team_name").eq(
+        "batch_id", str(batch_id)
+    ).execute()
+    existing_team_map = {
+        (row.get("team_name") or "").lower(): row
+        for row in (existing_team_rows.data or [])
+    }
+
+    def _chunk(items, size=200):
+        for i in range(0, len(items), size):
+            yield items[i:i + size]
+
+    teams_payload = []
+    projects_payload = []
+    students_payload = []
     
     # Get all mentors for email mapping
     mentors_response = supabase.table("users").select("id, email, full_name, role, is_mentor").or_("role.eq.mentor,is_mentor.eq.true").execute()
@@ -718,7 +734,28 @@ async def bulk_import_teams_with_mentors(
             mentor_map[m["email"].lower()] = m["id"]
         if m.get("full_name"):
             mentor_map[m["full_name"].lower()] = m["id"]
+
+    # Fetch existing teams in this batch for idempotent imports
+    existing_team_rows = supabase.table("teams").select("id, team_name, project_id").eq(
+        "batch_id", str(batch_id)
+    ).execute()
+    existing_team_map = {
+        (row.get("team_name") or "").lower(): row
+        for row in (existing_team_rows.data or [])
+    }
+
+    def _chunk(items, size=200):
+        for i in range(0, len(items), size):
+            yield items[i:i + size]
     
+    # Collect payloads for batch operations
+    teams_payload = []
+    projects_payload = []
+    assignments_payload = []
+    students_payload = []
+    team_members_payload = []
+    project_ids_for_members = []
+
     # Iterate over the Grouped Teams and Insert
     for team_key, team_data in teams_map.items():
         try:
@@ -745,8 +782,10 @@ async def bulk_import_teams_with_mentors(
                              mentor_id = v
                              break
 
-            # Generate IDs
-            common_id = str(uuid4())
+            # Check if team already exists in batch
+            existing_team = existing_team_map.get(team_data["team_name"].lower())
+            is_existing = bool(existing_team)
+            common_id = existing_team["id"] if is_existing else str(uuid4())
             
             # Prepare metadata with raw mentor info
             team_metadata = {}
@@ -771,9 +810,10 @@ async def bulk_import_teams_with_mentors(
                 ]
             }
 
-            # Create Team
-            team_insert = {
-                "id": common_id,
+            team_id = common_id
+
+            # Create or update Team
+            team_payload = {
                 "batch_id": str(batch_id),
                 "team_name": team_data["team_name"],
                 "repo_url": team_data.get("repo_url"),
@@ -782,42 +822,34 @@ async def bulk_import_teams_with_mentors(
                 "student_count": len(team_data["students"]),
                 "metadata": team_metadata
             }
-            
-            # Insert Team
-            team_res = supabase.table("teams").insert(team_insert).execute()
-            if not team_res.data:
-                 raise Exception("Failed to insert team record")
-            
-            team_id = common_id 
-            
-            # Create Project
             if team_data.get("repo_url"):
-                project_insert = {
-                    "id": common_id,
+                team_payload["project_id"] = team_id
+            team_payload["id"] = team_id
+            teams_payload.append(team_payload)
+            
+            # Create or update Project (project_id == team_id)
+            if team_data.get("repo_url"):
+                projects_payload.append({
+                    "id": team_id,
                     "team_id": team_id,
                     "batch_id": str(batch_id),
                     "team_name": team_data["team_name"],
                     "repo_url": team_data["repo_url"],
                     "description": team_data.get("project_description", f"Project for {team_data['team_name']}"),
                     "status": "pending"
-                }
-                sup_proj = supabase.table("projects").insert(project_insert).execute()
-                if sup_proj.data:
-                     # Link back
-                     supabase.table("teams").update({"project_id": common_id}).eq("id", team_id).execute()
+                })
             
             # Create Mentor Assignment
             if mentor_id:
-                 # Check existing assignment?
-                 supabase.table("mentor_team_assignments").insert({
-                     "mentor_id": mentor_id,
-                     "team_id": team_id,
-                     "batch_id": str(batch_id)
-                 }).execute()
+                assignments_payload.append({
+                    "mentor_id": mentor_id,
+                    "team_id": team_id,
+                    "batch_id": str(batch_id)
+                })
 
             # Create Students
             students_to_insert = []
-            team_members_to_insert = [] # For analytics
+            team_members_to_insert = []  # For analytics
             
             for s in team_data["students"]:
                 s_name = s["name"] or "Unknown Student"
@@ -846,56 +878,19 @@ async def bulk_import_teams_with_mentors(
                     })
 
             if students_to_insert:
-                # Avoid merging distinct students that share an email by checking name mismatches
-                emails = [s.get("email") for s in students_to_insert if s.get("email")]
-                existing_email_map = {}
-                if emails:
-                    existing = supabase.table("students").select("email, name")\
-                        .in_("email", emails).execute()
-                    existing_email_map = {
-                        (row.get("email") or "").lower(): (row.get("name") or "").strip()
-                        for row in (existing.data or [])
-                    }
+                students_payload.extend(students_to_insert)
 
-                filtered_students = []
-                filtered_team_members = []
-
-                for idx, student in enumerate(students_to_insert):
-                    email = (student.get("email") or "").strip()
-                    if not email:
-                        filtered_students.append(student)
-                        if idx < len(team_members_to_insert):
-                            filtered_team_members.append(team_members_to_insert[idx])
-                        continue
-
-                    existing_name = existing_email_map.get(email.lower())
-                    new_name = (student.get("name") or "").strip()
-
-                    if existing_name and new_name and existing_name.lower() != new_name.lower():
-                        errors.append({
-                            "row": team_key,
-                            "teamName": team_data.get("team_name", "Unknown"),
-                            "error": f"Student email already exists with different name: {email} ({existing_name} vs {new_name})"
-                        })
-                        continue
-
-                    filtered_students.append(student)
-                    if idx < len(team_members_to_insert):
-                        filtered_team_members.append(team_members_to_insert[idx])
-
-                students_to_insert = filtered_students
-                team_members_to_insert = filtered_team_members
-
-            if students_to_insert:
-                supabase.table("students").upsert(
-                    students_to_insert,
-                    on_conflict="email"
-                ).execute()
-            
             if team_members_to_insert:
-                supabase.table("team_members").insert(team_members_to_insert).execute()
+                team_members_payload.extend(team_members_to_insert)
+                project_ids_for_members.append(team_id)
 
-            created_teams.append(team_insert)
+            created_teams.append({
+                "id": team_id,
+                "team_name": team_data.get("team_name"),
+                "repo_url": team_data.get("repo_url"),
+                "mentor_id": mentor_id,
+                "batch_id": str(batch_id)
+            })
             successful += 1
 
         except Exception as e:
@@ -905,6 +900,76 @@ async def bulk_import_teams_with_mentors(
                 "teamName": team_data.get("team_name", "Unknown"),
                 "error": str(e)
             })
+
+    # Batch write teams and projects
+    try:
+        if teams_payload:
+            for chunk in _chunk(teams_payload, 200):
+                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
+
+        if projects_payload:
+            for chunk in _chunk(projects_payload, 200):
+                supabase.table("projects").upsert(chunk, on_conflict="id").execute()
+
+        if assignments_payload:
+            # Filter out existing mentor assignments in batch
+            team_ids = [a["team_id"] for a in assignments_payload]
+            mentor_ids = [a["mentor_id"] for a in assignments_payload]
+            existing_assignments = supabase.table("mentor_team_assignments").select("mentor_id, team_id").in_(
+                "team_id", team_ids
+            ).in_("mentor_id", mentor_ids).execute()
+            existing_pairs = {
+                (row.get("mentor_id"), row.get("team_id")) for row in (existing_assignments.data or [])
+            }
+            pending = [a for a in assignments_payload if (a["mentor_id"], a["team_id"]) not in existing_pairs]
+            for chunk in _chunk(pending, 200):
+                supabase.table("mentor_team_assignments").insert(chunk).execute()
+
+        if students_payload:
+            # Avoid merging distinct students that share an email by checking name mismatches
+            emails = [s.get("email") for s in students_payload if s.get("email")]
+            existing_email_map = {}
+            if emails:
+                existing = supabase.table("students").select("email, name").in_("email", emails).execute()
+                existing_email_map = {
+                    (row.get("email") or "").lower(): (row.get("name") or "").strip()
+                    for row in (existing.data or [])
+                }
+
+            filtered_students = []
+            for student in students_payload:
+                email = (student.get("email") or "").strip()
+                if not email:
+                    filtered_students.append(student)
+                    continue
+
+                existing_name = existing_email_map.get(email.lower())
+                new_name = (student.get("name") or "").strip()
+
+                if existing_name and new_name and existing_name.lower() != new_name.lower():
+                    errors.append({
+                        "row": "bulk",
+                        "teamName": student.get("team_id", "Unknown"),
+                        "error": f"Student email already exists with different name: {email} ({existing_name} vs {new_name})"
+                    })
+                    continue
+
+                filtered_students.append(student)
+
+            for chunk in _chunk(filtered_students, 500):
+                supabase.table("students").upsert(chunk, on_conflict="email").execute()
+
+        if team_members_payload and project_ids_for_members:
+            supabase.table("team_members").delete().in_("project_id", list(set(project_ids_for_members))).execute()
+            for chunk in _chunk(team_members_payload, 500):
+                supabase.table("team_members").insert(chunk).execute()
+    except Exception as batch_error:
+        failed += 1
+        errors.append({
+            "row": "bulk",
+            "teamName": "batch",
+            "error": f"Batch write failed: {str(batch_error)}"
+        })
 
     return BulkUploadResponse(
         successful=successful,
@@ -966,55 +1031,48 @@ async def bulk_upload_teams(
                         "email": student_email
                     })
             
-            # Generate shared ID
-            common_id = str(uuid4())
-            
-            # Create team
-            team_insert = {
+            existing_team = existing_team_map.get(team_name.lower())
+            common_id = existing_team["id"] if existing_team else str(uuid4())
+
+            team_payload = {
                 "id": common_id,
                 "batch_id": str(batch_id),
                 "team_name": team_name,
                 "health_status": "on_track",
                 "student_count": len(students)
             }
-            
-            team_response = supabase.table("teams").insert(team_insert).execute()
-            team = team_response.data[0]
-            team_id = team["id"]
-            
-            # Create project if repo URL provided
             if repo_url:
-                project_insert = {
-                    "id": common_id,
+                team_payload["project_id"] = common_id
+            teams_payload.append(team_payload)
+            team_id = common_id
+            
+            if repo_url:
+                projects_payload.append({
+                    "id": team_id,
                     "team_id": team_id,
                     "batch_id": str(batch_id),
                     "team_name": team_name,
                     "repo_url": repo_url,
                     "description": description,
                     "status": "pending"
-                }
-                
-                project_response = supabase.table("projects").insert(project_insert).execute()
-                
-                if project_response.data:
-                    supabase.table("teams").update({
-                        "project_id": common_id
-                    }).eq("id", team_id).execute()
+                })
             
-            # Create students
             if students:
-                students_insert = [
+                students_payload.extend([
                     {
                         "team_id": team_id,
                         "name": s["name"],
                         "email": s["email"]
                     }
                     for s in students
-                ]
-                
-                supabase.table("students").insert(students_insert).execute()
+                ])
             
-            created_teams.append(team)
+            created_teams.append({
+                "id": team_id,
+                "team_name": team_name,
+                "repo_url": repo_url,
+                "batch_id": str(batch_id)
+            })
             successful += 1
             
         except Exception as e:
@@ -1025,6 +1083,26 @@ async def bulk_upload_teams(
                 "error": str(e)
             })
     
+    try:
+        if teams_payload:
+            for chunk in _chunk(teams_payload, 200):
+                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
+
+        if projects_payload:
+            for chunk in _chunk(projects_payload, 200):
+                supabase.table("projects").upsert(chunk, on_conflict="id").execute()
+
+        if students_payload:
+            for chunk in _chunk(students_payload, 500):
+                supabase.table("students").upsert(chunk, on_conflict="email").execute()
+    except Exception as batch_error:
+        failed += 1
+        errors.append({
+            "row": "bulk",
+            "teamName": "batch",
+            "error": f"Batch write failed: {str(batch_error)}"
+        })
+
     return BulkUploadResponse(
         successful=successful,
         failed=failed,
