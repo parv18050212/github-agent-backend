@@ -822,8 +822,6 @@ async def bulk_import_teams_with_mentors(
                 "student_count": len(team_data["students"]),
                 "metadata": team_metadata
             }
-            if team_data.get("repo_url"):
-                team_payload["project_id"] = team_id
             team_payload["id"] = team_id
             teams_payload.append(team_payload)
             
@@ -903,13 +901,18 @@ async def bulk_import_teams_with_mentors(
 
     # Batch write teams and projects
     try:
-        if teams_payload:
-            for chunk in _chunk(teams_payload, 200):
-                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
-
         if projects_payload:
             for chunk in _chunk(projects_payload, 200):
                 supabase.table("projects").upsert(chunk, on_conflict="id").execute()
+
+            project_team_ids = {proj.get("team_id") for proj in projects_payload}
+            for team in teams_payload:
+                if team.get("id") in project_team_ids:
+                    team["project_id"] = team["id"]
+
+        if teams_payload:
+            for chunk in _chunk(teams_payload, 200):
+                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
 
         if assignments_payload:
             # Filter out existing mentor assignments in batch
@@ -1041,8 +1044,6 @@ async def bulk_upload_teams(
                 "health_status": "on_track",
                 "student_count": len(students)
             }
-            if repo_url:
-                team_payload["project_id"] = common_id
             teams_payload.append(team_payload)
             team_id = common_id
             
@@ -1084,13 +1085,18 @@ async def bulk_upload_teams(
             })
     
     try:
-        if teams_payload:
-            for chunk in _chunk(teams_payload, 200):
-                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
-
         if projects_payload:
             for chunk in _chunk(projects_payload, 200):
                 supabase.table("projects").upsert(chunk, on_conflict="id").execute()
+
+            project_team_ids = {proj.get("team_id") for proj in projects_payload}
+            for team in teams_payload:
+                if team.get("id") in project_team_ids:
+                    team["project_id"] = team["id"]
+
+        if teams_payload:
+            for chunk in _chunk(teams_payload, 200):
+                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
 
         if students_payload:
             for chunk in _chunk(students_payload, 500):
