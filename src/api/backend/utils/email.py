@@ -31,7 +31,7 @@ def send_alert_email(
     user = _get_env("SMTP_USER")
     password = _get_env("SMTP_PASS")
     sender_email = _get_env("SMTP_FROM") or user
-    sender_name = _get_env("SMTP_FROM_NAME", "HackEval")
+    sender_name = _get_env("SMTP_FROM_NAME", "ProjectFlow")
     use_tls = (_get_env("SMTP_USE_TLS", "true") or "true").lower() == "true"
 
     if not host or not sender_email:

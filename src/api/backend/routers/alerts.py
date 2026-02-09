@@ -3,6 +3,7 @@ Alerts API endpoints for sending student notifications.
 """
 from datetime import datetime
 from typing import List, Optional
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
@@ -44,7 +45,8 @@ def _ensure_role(current_user: AuthUser, team_id: str) -> None:
 
 
 def _build_email_body(title: str, message: str, team_name: Optional[str]) -> str:
-    header = f"HackEval Alert: {title}"
+    brand = os.getenv("SMTP_FROM_NAME", "ProjectFlow")
+    header = f"{brand} Alert: {title}"
     if team_name:
         header = f"{header} (Team: {team_name})"
     return f"{header}\n\n{message}\n"
@@ -87,7 +89,8 @@ async def send_team_alert(
             skipped += 1
             continue
 
-        subject = f"HackEval Alert: {payload.title}"
+        brand = os.getenv("SMTP_FROM_NAME", "ProjectFlow")
+        subject = f"{brand} Alert: {payload.title}"
         body = _build_email_body(payload.title, payload.message, team.get("team_name"))
 
         send_status = "sent"
