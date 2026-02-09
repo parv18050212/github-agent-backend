@@ -111,7 +111,7 @@ async def get_current_user(
 
         # IMPORTANT: Fetch FRESH role from users table first (where admin panel updates it)
         # Fall back to app_metadata only if users table lookup fails
-        role = "mentor"  # Default fallback
+        role = "none"  # Default fallback for revoked users
         try:
             admin_client = get_supabase_admin_client()
 
@@ -119,12 +119,9 @@ async def get_current_user(
             users_result = admin_client.table("users").select("role").eq("id", user_id).execute()
             if users_result.data and len(users_result.data) > 0:
                 db_role = users_result.data[0].get("role")
-                if db_role:
-                    role = db_role
-                    print(f"[Auth] Role from users table: {role}")
-            
-            # If no role in users table, fall back to Supabase auth metadata
-            if role == "mentor":
+                role = db_role if db_role else "none"
+                print(f"[Auth] Role from users table: {role}")
+            else:
                 admin_user = admin_client.auth.admin.get_user_by_id(user_id)
                 if admin_user and admin_user.user:
                     fresh_app_metadata = admin_user.user.app_metadata or {}
