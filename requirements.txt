@@ -33,4 +33,4 @@ python-multipart
 redis
 celery[redis]
 flower
-prometheus-client
+prometheus-fastapi-instrumentator
