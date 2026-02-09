@@ -2,11 +2,14 @@
 Main FastAPI Application
 Repository Analysis Backend API
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import os
 from dotenv import load_dotenv
+import time
+
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 # Load environment variables
 load_dotenv()
@@ -38,6 +41,21 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+REQUEST_COUNT = Counter(
+    "app_http_requests_total",
+    "Total HTTP requests",
+    ["method", "path", "status"]
+)
+REQUEST_LATENCY = Histogram(
+    "app_http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["method", "path"]
+)
+INFLIGHT_REQUESTS = Gauge(
+    "app_inflight_requests",
+    "In-flight HTTP requests"
+)
+
 # CORS middleware
 cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 if cors_origins == ["*"]:
@@ -54,6 +72,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _metrics_path(request: Request) -> str:
+    route = request.scope.get("route")
+    if route and hasattr(route, "path"):
+        return route.path
+    return request.url.path
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
+    INFLIGHT_REQUESTS.inc()
+    start = time.time()
+    status = "500"
+    try:
+        response = await call_next(request)
+        status = str(response.status_code)
+        return response
+    finally:
+        duration = time.time() - start
+        path = _metrics_path(request)
+        REQUEST_COUNT.labels(request.method, path, status).inc()
+        REQUEST_LATENCY.labels(request.method, path).observe(duration)
+        INFLIGHT_REQUESTS.dec()
 
 # Include routers
 app.include_router(analysis.router)
@@ -139,6 +184,11 @@ async def health_check():
                 "error": str(e)
             }
         )
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.on_event("startup")
