@@ -5,9 +5,16 @@ from supabase import create_client, Client
 from pprint import pprint
 import json
 
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return value
+
+
 # Configuration from .env
-SUPABASE_URL = "https://frcdvwuapmunkjaarrzr.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyY2R2d3VhcG11bmtqYWFycnpyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2Nzg5MDA5OCwiZXhwIjoyMDgzNDY2MDk4fQ.34mr4Vty3xuObCtJ458ChJ9BE2EAwhwWWKQu4aVTPE0"
+SUPABASE_URL = require_env("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or require_env("SUPABASE_KEY")
 
 async def main():
     print("Connecting to Supabase...")

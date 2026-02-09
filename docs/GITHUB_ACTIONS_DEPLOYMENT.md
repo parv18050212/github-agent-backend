@@ -112,7 +112,7 @@ Add the following secrets:
 | `AWS_ACCESS_KEY_ID` | `AKIA...` | AWS IAM access key |
 | `AWS_SECRET_ACCESS_KEY` | `wJal...` | AWS IAM secret key |
 | `AWS_REGION` | `us-east-1` | Your AWS region |
-| `EC2_SSH_KEY` | `-----BEGIN RSA PRIVATE KEY-----...` | **Full content** of your .pem file |
+| `EC2_SSH_KEY` | `<full PEM contents>` | **Full content** of your .pem file |
 | `EC2_HOST` | `54.123.45.67` | Your EC2 public IP address |
 | `EC2_USER` | `ubuntu` | SSH username (ubuntu for Ubuntu AMI) |
 | `SUPABASE_URL` | `https://xxx.supabase.co` | Your Supabase project URL |
@@ -140,10 +140,7 @@ aws iam attach-user-policy --user-name github-actions-deploy \
 # Display your .pem key
 cat your-key.pem
 
-# Copy the ENTIRE output including:
-# -----BEGIN RSA PRIVATE KEY-----
-# ... all the key content ...
-# -----END RSA PRIVATE KEY-----
+# Copy the ENTIRE output including the header and footer lines of the key.
 ```
 
 ### Step 4: Initial Repository Setup on EC2
@@ -373,7 +370,7 @@ sudo certbot renew --dry-run
 **SSH Connection Failed:**
 ```
 # Verify EC2_SSH_KEY secret is complete
-# Include -----BEGIN RSA PRIVATE KEY----- and -----END RSA PRIVATE KEY-----
+# Include the header and footer lines of the key
 
 # Verify EC2_HOST is correct public IP
 # Check security group allows port 22 from GitHub Actions IPs

@@ -822,10 +822,17 @@ class TeamCreateRequest(BaseModel):
 class TeamUpdateRequest(BaseModel):
     """Update team request"""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
+    repo_url: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = Field(None, pattern="^(active|inactive|archived)$")
     health_status: Optional[str] = Field(None, pattern="^(on_track|at_risk|critical)$")
     risk_flags: Optional[List[str]] = None
+
+    @validator('repo_url')
+    def validate_repo_url(cls, v):
+        if v and 'github.com' not in v.lower():
+            raise ValueError('Only GitHub repositories are supported')
+        return v
 
 
 class TeamResponse(BaseModel):

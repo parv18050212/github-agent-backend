@@ -59,10 +59,7 @@ Go to: GitHub Repository → Settings → Secrets and variables → Actions → 
 # Display full key content
 cat your-key.pem
 
-# Copy EVERYTHING including:
-# -----BEGIN RSA PRIVATE KEY-----
-# ... all content ...
-# -----END RSA PRIVATE KEY-----
+# Copy EVERYTHING including the header and footer lines of the key
 ```
 
 ### 4. Supabase Database Setup

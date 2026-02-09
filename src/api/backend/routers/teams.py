@@ -313,6 +313,7 @@ async def create_team(
             "id": common_id,
             "team_id": team_id,
             "batch_id": str(team_data.batch_id),
+            "team_name": team_data.name,
             "repo_url": team_data.repo_url,
             "status": "pending"
         }
@@ -380,6 +381,50 @@ async def create_team(
         team=team_detail.data[0],
         message="Team created successfully"
     )
+
+
+@router.delete("/clear-all", response_model=MessageResponse, dependencies=[Depends(RoleChecker(["admin"]))])
+async def clear_all_teams(
+    batch_id: UUID = Query(..., description="Batch ID to clear teams from"),
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Delete all teams and dependent data for a batch (admin only).
+    """
+    supabase = get_supabase_admin_client()
+
+    teams_response = supabase.table("teams").select("id, project_id").eq("batch_id", str(batch_id)).execute()
+    teams_data = teams_response.data or []
+
+    if not teams_data:
+        return MessageResponse(success=True, message="No teams found for this batch")
+
+    team_ids = [team.get("id") for team in teams_data if team.get("id")]
+    project_ids = {team.get("project_id") for team in teams_data if team.get("project_id")}
+
+    projects_response = supabase.table("projects").select("id").eq("batch_id", str(batch_id)).execute()
+    for project in projects_response.data or []:
+        if project.get("id"):
+            project_ids.add(project.get("id"))
+
+    project_id_list = list(project_ids)
+
+    if project_id_list:
+        supabase.table("analysis_jobs").delete().in_("project_id", project_id_list).execute()
+        supabase.table("analysis_snapshots").delete().in_("project_id", project_id_list).execute()
+        supabase.table("issues").delete().in_("project_id", project_id_list).execute()
+        supabase.table("project_comments").delete().in_("project_id", project_id_list).execute()
+        supabase.table("tech_stack").delete().in_("project_id", project_id_list).execute()
+        supabase.table("team_members").delete().in_("project_id", project_id_list).execute()
+
+    if team_ids:
+        supabase.table("mentor_team_assignments").delete().in_("team_id", team_ids).execute()
+        supabase.table("students").delete().in_("team_id", team_ids).execute()
+
+    supabase.table("teams").delete().eq("batch_id", str(batch_id)).execute()
+    supabase.table("projects").delete().eq("batch_id", str(batch_id)).execute()
+
+    return MessageResponse(success=True, message="Deleted all teams for this batch")
 
 
 @router.post("/{team_id}/assign", response_model=MessageResponse, dependencies=[Depends(RoleChecker(["admin"]))])
@@ -751,6 +796,7 @@ async def bulk_import_teams_with_mentors(
                     "id": common_id,
                     "team_id": team_id,
                     "batch_id": str(batch_id),
+                    "team_name": team_data["team_name"],
                     "repo_url": team_data["repo_url"],
                     "description": team_data.get("project_description", f"Project for {team_data['team_name']}"),
                     "status": "pending"
@@ -798,9 +844,53 @@ async def bulk_import_teams_with_mentors(
                         "commits": 0,
                         "contribution_pct": 0.0
                     })
-            
+
             if students_to_insert:
-                supabase.table("students").insert(students_to_insert).execute()
+                # Avoid merging distinct students that share an email by checking name mismatches
+                emails = [s.get("email") for s in students_to_insert if s.get("email")]
+                existing_email_map = {}
+                if emails:
+                    existing = supabase.table("students").select("email, name")\
+                        .in_("email", emails).execute()
+                    existing_email_map = {
+                        (row.get("email") or "").lower(): (row.get("name") or "").strip()
+                        for row in (existing.data or [])
+                    }
+
+                filtered_students = []
+                filtered_team_members = []
+
+                for idx, student in enumerate(students_to_insert):
+                    email = (student.get("email") or "").strip()
+                    if not email:
+                        filtered_students.append(student)
+                        if idx < len(team_members_to_insert):
+                            filtered_team_members.append(team_members_to_insert[idx])
+                        continue
+
+                    existing_name = existing_email_map.get(email.lower())
+                    new_name = (student.get("name") or "").strip()
+
+                    if existing_name and new_name and existing_name.lower() != new_name.lower():
+                        errors.append({
+                            "row": team_key,
+                            "teamName": team_data.get("team_name", "Unknown"),
+                            "error": f"Student email already exists with different name: {email} ({existing_name} vs {new_name})"
+                        })
+                        continue
+
+                    filtered_students.append(student)
+                    if idx < len(team_members_to_insert):
+                        filtered_team_members.append(team_members_to_insert[idx])
+
+                students_to_insert = filtered_students
+                team_members_to_insert = filtered_team_members
+
+            if students_to_insert:
+                supabase.table("students").upsert(
+                    students_to_insert,
+                    on_conflict="email"
+                ).execute()
             
             if team_members_to_insert:
                 supabase.table("team_members").insert(team_members_to_insert).execute()
@@ -898,6 +988,7 @@ async def bulk_upload_teams(
                     "id": common_id,
                     "team_id": team_id,
                     "batch_id": str(batch_id),
+                    "team_name": team_name,
                     "repo_url": repo_url,
                     "description": description,
                     "status": "pending"
@@ -1044,9 +1135,12 @@ async def update_team(
     supabase = get_supabase_admin_client()
     
     # Check if team exists
-    existing_team = supabase.table("teams").select("id").eq("id", str(team_id)).execute()
+    existing_team = supabase.table("teams").select(
+        "id, project_id, batch_id, team_name"
+    ).eq("id", str(team_id)).execute()
     if not existing_team.data:
         raise HTTPException(status_code=404, detail="Team not found")
+    team_row = existing_team.data[0]
     
     # Build update data
     update_data = {}
@@ -1058,9 +1152,35 @@ async def update_team(
         update_data["health_status"] = team_data.health_status
     if team_data.risk_flags is not None:
         update_data["risk_flags"] = team_data.risk_flags
+    if team_data.repo_url is not None:
+        update_data["repo_url"] = team_data.repo_url
     
     # Update team
     team_response = supabase.table("teams").update(update_data).eq("id", str(team_id)).execute()
+
+    # Sync or create project when repo_url changes
+    if team_data.repo_url is not None:
+        project_id = team_row.get("project_id")
+        if project_id:
+            supabase.table("projects").update({
+                "repo_url": team_data.repo_url,
+                "team_name": team_data.name or team_row.get("team_name")
+            }).eq("id", str(project_id)).execute()
+        elif team_data.repo_url:
+            new_project_id = uuid4()
+            project_insert = {
+                "id": str(new_project_id),
+                "team_id": str(team_id),
+                "batch_id": str(team_row.get("batch_id")),
+                "team_name": team_data.name or team_row.get("team_name"),
+                "repo_url": team_data.repo_url,
+                "status": "pending"
+            }
+            project_response = supabase.table("projects").insert(project_insert).execute()
+            if project_response.data:
+                supabase.table("teams").update({
+                    "project_id": str(new_project_id)
+                }).eq("id", str(team_id)).execute()
     
     # Update project if description provided
     if team_data.description is not None:

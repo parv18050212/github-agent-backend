@@ -373,6 +373,11 @@ async def get_leaderboard(
             
             item = FrontendAdapter.transform_leaderboard_item(project, tech_stack)
             results.append(item)
+
+        # Add rank after filtering/sorting
+        start_rank = (page - 1) * page_size
+        for idx, item in enumerate(results):
+            item["rank"] = start_rank + idx + 1
         
         # Return proper schema format
         response = {

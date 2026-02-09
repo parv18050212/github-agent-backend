@@ -4,6 +4,7 @@ Provides detailed analytics, commit history, and file tree for teams.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
+import re
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta, timezone
 import json
@@ -816,20 +817,99 @@ async def get_team_file_tree(
         }
     
     project = project_response.data[0]
-    analysis_result = project.get("analysis_result", {})
-    
-    if isinstance(analysis_result, str):
+    report = project.get("report_json") or project.get("analysis_result") or {}
+
+    if isinstance(report, str):
         try:
-            analysis_result = json.loads(analysis_result)
+            report = json.loads(report)
         except:
-            analysis_result = {}
-    
+            report = {}
+
+    structure = report.get("structure", {}) if isinstance(report.get("structure"), dict) else {}
+
     # In a real implementation, this would build from actual file data
     # For now, create a simplified tree structure from languages
-    languages = analysis_result.get("languages", [])
-    total_files = analysis_result.get("totalFiles", 0)
-    total_loc = analysis_result.get("totalLinesOfCode", 0)
+    languages = (
+        report.get("languages")
+        or report.get("codeMetrics", {}).get("languages")
+        or report.get("code_metrics", {}).get("languages")
+        or []
+    )
+    if isinstance(languages, dict):
+        languages = [
+            {"language": name, "percentage": pct}
+            for name, pct in languages.items()
+        ]
+    if not isinstance(languages, list):
+        languages = []
+    total_files = (
+        structure.get("file_count")
+        or report.get("totalFiles")
+        or report.get("codeMetrics", {}).get("totalFiles")
+        or report.get("code_metrics", {}).get("totalFiles")
+        or 0
+    )
+    total_loc = (
+        structure.get("loc")
+        or report.get("totalLinesOfCode")
+        or report.get("codeMetrics", {}).get("totalLinesOfCode")
+        or report.get("code_metrics", {}).get("totalLinesOfCode")
+        or 0
+    )
     
+    def _parse_repo_tree(tree_text: str):
+        if not tree_text or not isinstance(tree_text, str):
+            return [], 0
+        if "Tree structure unavailable" in tree_text or "Tree generation failed" in tree_text or "Tree generation skipped" in tree_text:
+            return [], 0
+
+        lines = [line for line in tree_text.splitlines() if line.strip()]
+        nodes = []
+        stack = []
+        file_count = 0
+
+        for line in lines:
+            if "... (" in line and "more files" in line:
+                continue
+
+            depth = line.count("│   ")
+            cleaned = line.replace("│   ", "")
+            cleaned = cleaned.replace("├── ", "")
+            cleaned = re.sub(r"^[^A-Za-z0-9_\.\-]+", "", cleaned).strip()
+            if not cleaned:
+                continue
+
+            is_dir = cleaned.endswith("/")
+            name = cleaned[:-1] if is_dir else cleaned
+
+            parent_path = ""
+            if depth - 1 >= 0 and depth - 1 < len(stack):
+                parent_path = stack[depth - 1]["path"]
+
+            node_path = f"{parent_path}/{name}" if parent_path else name
+            node = {
+                "path": node_path,
+                "type": "directory" if is_dir else "file"
+            }
+            if is_dir:
+                node["children"] = []
+
+            if depth - 1 >= 0 and depth - 1 < len(stack):
+                stack[depth - 1].setdefault("children", []).append(node)
+            else:
+                nodes.append(node)
+
+            if is_dir:
+                stack = stack[:depth]
+                stack.append(node)
+            else:
+                file_count += 1
+
+        if nodes and len(nodes) == 1 and nodes[0].get("type") == "directory":
+            return nodes[0].get("children", []), file_count
+
+        return nodes, file_count
+
     # Build simplified tree
     tree = []
     
@@ -874,9 +954,31 @@ async def get_team_file_tree(
         "size": 2048,
         "language": "Markdown"
     })
-    
-    # Calculate total size (estimate)
-    total_size = total_loc * 50  # Rough estimate: 50 bytes per line
+
+    repo_tree_text = report.get("repo_tree") if isinstance(report, dict) else None
+    parsed_tree, parsed_file_count = _parse_repo_tree(repo_tree_text)
+    if parsed_tree:
+        tree = parsed_tree
+
+    def _count_tree(nodes):
+        file_count = 0
+        total_size = 0
+        for node in nodes:
+            if node.get("type") == "file":
+                file_count += 1
+                total_size += node.get("size") or 0
+            for child in node.get("children") or []:
+                child_count, child_size = _count_tree([child])
+                file_count += child_count
+                total_size += child_size
+        return file_count, total_size
+
+    tree_file_count, tree_size = _count_tree(tree)
+    if not total_files:
+        total_files = parsed_file_count or tree_file_count
+
+    # Calculate total size (estimate) if needed
+    total_size = total_loc * 50 if total_loc else tree_size
     
     return {
         "tree": tree,
@@ -920,22 +1022,29 @@ async def get_team_commit_diff(
         else:
             raise ValueError("Only GitHub repositories are supported for diff view")
             
-        # Get GitHub token
-        gh_token = os.getenv("GH_API_KEY")
-        if not gh_token:
-            raise HTTPException(status_code=500, detail="GitHub API key not configured")
+        # Get GitHub token (prefer GH_API_KEY, fallback to GITHUB_TOKEN)
+        gh_token = os.getenv("GH_API_KEY") or os.getenv("GITHUB_TOKEN")
             
         api_url = f"https://api.github.com/repos/{repo_path}/commits/{sha}"
         
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if gh_token:
+            headers["Authorization"] = f"Bearer {gh_token}"
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 api_url,
-                headers={
-                    "Authorization": f"Bearer {gh_token}",
-                    "Accept": "application/vnd.github.v3+json"
-                },
+                headers=headers,
                 timeout=10.0
             )
+
+            if response.status_code == 401 and gh_token:
+                # Retry once without token for public repos
+                response = await client.get(
+                    api_url,
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                    timeout=10.0
+                )
             
             if response.status_code != 200:
                 raise HTTPException(

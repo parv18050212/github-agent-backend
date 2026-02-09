@@ -7,10 +7,17 @@ from typing import Dict, List, Any
 
 from supabase import create_client, Client
 
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return value
+
+
 # Configuration
-SUPABASE_URL = "https://frcdvwuapmunkjaarrzr.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyY2R2d3VhcG11bmtqYWFycnpyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2Nzg5MDA5OCwiZXhwIjoyMDgzNDY2MDk4fQ.34mr4Vty3xuObCtJ458ChJ9BE2EAwhwWWKQu4aVTPE0"
-GITHUB_TOKEN = "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"
+SUPABASE_URL = require_env("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or require_env("SUPABASE_KEY")
+GITHUB_TOKEN = require_env("GITHUB_TOKEN")
 
 def get_repo_path(url: str) -> str:
     """Extract owner/repo from URL"""

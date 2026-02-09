@@ -44,6 +44,9 @@ MENTORS = [
 def seed_mentors():
     """Create/update mentor accounts in database"""
     supabase = get_supabase_admin_client()
+    default_password = os.getenv("MENTOR_DEFAULT_PASSWORD")
+    if not default_password:
+        raise RuntimeError("Missing required env var: MENTOR_DEFAULT_PASSWORD")
     
     print("Seeding mentors...")
     print("=" * 60)
@@ -76,8 +79,6 @@ def seed_mentors():
                 updated_count += 1
             else:
                 # Create auth user first with a default password (they should change it)
-                default_password = "ChangeMe123!"  # Mentors will change on first login
-                
                 try:
                     # Use Supabase Admin Auth API to create user
                     auth_response = supabase.auth.admin.create_user({
@@ -106,7 +107,7 @@ def seed_mentors():
                         result = supabase.table("users").insert(user_data).execute()
                         
                         if result.data:
-                            print(f"✓ Created: {mentor_data['full_name']} ({mentor_data['email']}) - Default password: {default_password}")
+                            print(f"✓ Created: {mentor_data['full_name']} ({mentor_data['email']})")
                             created_count += 1
                         else:
                             print(f"✗ Failed to create users table entry for: {mentor_data['email']}")
