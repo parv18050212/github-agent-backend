@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      rollback_ref:
+        description: "Git ref to rollback to (e.g. HEAD^, a tag, or a SHA)"
+        required: true
+        default: "HEAD^"
 
 jobs:
   deploy:
@@ -44,3 +50,45 @@ jobs:
             curl -f http://localhost:3000/health || exit 1
 
             echo "✅ Backend deployment successful"
+
+  rollback:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Rollback backend via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            echo "↩️ Rolling back backend"
+
+            cd ~/github-agent-backend
+
+            echo "📥 Fetching refs"
+            git fetch --all --tags
+
+            echo "🔎 Validating rollback ref"
+            git rev-parse --verify "${{ github.event.inputs.rollback_ref }}" >/dev/null
+
+            echo "⏪ Resetting to rollback ref"
+            git reset --hard "${{ github.event.inputs.rollback_ref }}"
+
+            echo "🐳 Restarting containers"
+            docker compose down
+            docker compose up -d --build
+
+            echo "⏳ Waiting for services to stabilize"
+            sleep 10
+
+            echo "📊 Container status"
+            docker compose ps
+
+            echo "❤️ Health check"
+            curl -f http://localhost:3000/health || exit 1
+
+            echo "✅ Backend rollback successful"
