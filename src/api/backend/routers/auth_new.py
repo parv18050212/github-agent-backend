@@ -60,6 +60,48 @@ async def login(request: LoginRequest):
         # Get role (default to 'mentor' if not set)
         role = app_metadata.get("role") or user_metadata.get("role") or "mentor"
         
+        admin_client = get_supabase_admin_client()
+
+        # Ensure users table is synced on login
+        try:
+            user_id = str(user.id)
+            existing_user = admin_client.table("users").select("id, role, is_mentor").eq("id", user_id).limit(1).execute()
+            existing_record = existing_user.data[0] if existing_user.data else None
+
+            desired_role = role
+            if existing_record and existing_record.get("role") == "admin":
+                desired_role = "admin"
+
+            role = desired_role
+            desired_is_mentor = bool(app_metadata.get("is_mentor")) or desired_role == "mentor"
+            if existing_record and existing_record.get("is_mentor") is True:
+                desired_is_mentor = True
+
+            profile_full_name = user_metadata.get("full_name") or user_metadata.get("name")
+            now_iso = datetime.utcnow().isoformat()
+
+            if existing_record:
+                update_fields = {
+                    "role": desired_role,
+                    "is_mentor": desired_is_mentor,
+                    "updated_at": now_iso
+                }
+                if profile_full_name:
+                    update_fields["full_name"] = profile_full_name
+                admin_client.table("users").update(update_fields).eq("id", user_id).execute()
+            else:
+                admin_client.table("users").insert({
+                    "id": user_id,
+                    "email": user.email,
+                    "full_name": profile_full_name,
+                    "role": desired_role,
+                    "is_mentor": desired_is_mentor,
+                    "status": "active",
+                    "created_at": user.created_at or now_iso
+                }).execute()
+        except Exception as sync_error:
+            print(f"[Auth] Failed to sync users table: {sync_error}")
+
         # Build user profile response
         user_profile = UserProfileResponse(
             id=UUID(user.id),

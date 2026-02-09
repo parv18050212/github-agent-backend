@@ -4,6 +4,7 @@ Handles all mentor CRUD operations and mentor-related endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
+from datetime import datetime
 from uuid import UUID
 
 from ..models import UserProfile
@@ -104,43 +105,53 @@ async def create_mentor(
     
     Creates a user account with mentor role. The mentor must sign in with Google OAuth.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Check if user already exists
-    existing_user = supabase.table("users").select("id, email").eq("email", mentor_data.email).execute()
+    existing_user = supabase.table("users").select("id, email, role, status").eq("email", mentor_data.email).execute()
     
+    status = mentor_data.status or "active"
+
     if existing_user.data:
-        raise HTTPException(
-            status_code=400,
-            detail=f"User with email {mentor_data.email} already exists"
-        )
-    
-    # Note: In a real implementation, we would:
-    # 1. Send an invitation email to the mentor
-    # 2. They would sign up via Google OAuth
-    # 3. On first login, we set their role to 'mentor'
-    
-    # For now, we'll create a placeholder user that will be populated on first login
-    user_insert = {
-        "email": mentor_data.email,
-        "full_name": mentor_data.full_name,
-        "role": "mentor",
-        "status": mentor_data.status or "active"
-    }
-    
-    # Note: This is a simplified version. In production, you'd use Supabase Admin API
-    # to create the user properly, or send an invite
-    
-    return MentorResponse(
-        mentor={
+        existing = existing_user.data[0]
+        update_fields = {
+            "full_name": mentor_data.full_name,
+            "status": status,
+            "is_mentor": True,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        if existing.get("role") != "admin":
+            update_fields["role"] = "mentor"
+
+        update_response = supabase.table("users").update(update_fields).eq("id", existing["id"]).execute()
+        updated_user = (update_response.data or [existing])[0]
+        mentor_record = updated_user
+    else:
+        user_insert = {
             "email": mentor_data.email,
             "full_name": mentor_data.full_name,
             "role": "mentor",
-            "status": mentor_data.status or "active",
+            "is_mentor": True,
+            "status": status,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        insert_response = supabase.table("users").insert(user_insert).execute()
+        mentor_record = (insert_response.data or [user_insert])[0]
+
+    return MentorResponse(
+        mentor={
+            "id": mentor_record.get("id"),
+            "email": mentor_record.get("email", mentor_data.email),
+            "full_name": mentor_record.get("full_name", mentor_data.full_name),
+            "role": mentor_record.get("role", "mentor"),
+            "status": mentor_record.get("status", status),
             "team_count": 0,
             "batches": []
         },
-        message=f"Invitation sent to {mentor_data.email}. They must sign in with Google to activate their account."
+        message=(
+            f"Mentor record created for {mentor_data.email}. "
+            "They must sign in with Google to activate their account."
+        )
     )
 
 
