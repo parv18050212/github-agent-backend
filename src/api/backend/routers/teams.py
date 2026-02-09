@@ -901,6 +901,10 @@ async def bulk_import_teams_with_mentors(
 
     # Batch write teams and projects
     try:
+        if teams_payload:
+            for chunk in _chunk(teams_payload, 200):
+                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
+
         if projects_payload:
             for chunk in _chunk(projects_payload, 200):
                 supabase.table("projects").upsert(chunk, on_conflict="id").execute()
@@ -910,7 +914,6 @@ async def bulk_import_teams_with_mentors(
                 if team.get("id") in project_team_ids:
                     team["project_id"] = team["id"]
 
-        if teams_payload:
             for chunk in _chunk(teams_payload, 200):
                 supabase.table("teams").upsert(chunk, on_conflict="id").execute()
 
@@ -1085,6 +1088,10 @@ async def bulk_upload_teams(
             })
     
     try:
+        if teams_payload:
+            for chunk in _chunk(teams_payload, 200):
+                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
+
         if projects_payload:
             for chunk in _chunk(projects_payload, 200):
                 supabase.table("projects").upsert(chunk, on_conflict="id").execute()
@@ -1094,7 +1101,6 @@ async def bulk_upload_teams(
                 if team.get("id") in project_team_ids:
                     team["project_id"] = team["id"]
 
-        if teams_payload:
             for chunk in _chunk(teams_payload, 200):
                 supabase.table("teams").upsert(chunk, on_conflict="id").execute()
 
