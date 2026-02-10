@@ -216,6 +216,20 @@ async def list_teams(
         else:
             team["projects"] = []
 
+    # Compute student_count from students table for the current page of teams.
+    team_ids = [team.get("id") for team in teams if team.get("id")]
+    if team_ids:
+        students_response = supabase.table("students").select("team_id").in_("team_id", team_ids).execute()
+        student_counts = {}
+        for student in students_response.data or []:
+            team_id = student.get("team_id")
+            if team_id:
+                student_counts[team_id] = student_counts.get(team_id, 0) + 1
+
+        for team in teams:
+            team_id = team.get("id")
+            team["student_count"] = student_counts.get(team_id, 0)
+
     # Debug logging for query results
     print(f"[Teams API] Query returned {len(teams)} teams, total count: {total}")
     if current_user.role == "mentor":
@@ -1557,12 +1571,57 @@ async def analyze_team(
             message=f"Analysis already in progress (status: {current_status})"
         )
     
+    # Create a manual batch run so analysis shows in weekly progress charts
+    batch_run_id = None
+    run_number = None
+    if team.get("batch_id"):
+        try:
+            last_run_result = supabase.table("batch_analysis_runs")\
+                .select("run_number")\
+                .eq("batch_id", str(team["batch_id"]))\
+                .order("run_number", desc=True)\
+                .limit(1)\
+                .execute()
+
+            run_number = 1
+            if last_run_result.data:
+                run_number = last_run_result.data[0]["run_number"] + 1
+
+            run_insert = {
+                "batch_id": str(team["batch_id"]),
+                "run_number": run_number,
+                "status": "running",
+                "total_teams": 1,
+                "completed_teams": 0,
+                "failed_teams": 0,
+                "started_at": datetime.now().isoformat(),
+                "metadata": {
+                    "trigger": "manual",
+                    "team_id": str(team_id)
+                }
+            }
+
+            run_result = supabase.table("batch_analysis_runs").insert(run_insert).execute()
+            if run_result.data:
+                batch_run_id = run_result.data[0]["id"]
+        except Exception as run_error:
+            print(f"⚠ Manual batch run creation failed: {run_error}")
+
     # Create analysis job
     job_insert = {
         "project_id": project_id,
         "status": "queued",
         "requested_by": str(current_user.user_id),
-        "started_at": datetime.now().isoformat()
+        "started_at": datetime.now().isoformat(),
+        "team_id": str(team_id),
+        "batch_id": str(team.get("batch_id")) if team.get("batch_id") else None,
+        "run_number": run_number,
+        "metadata": {
+            "trigger": "manual",
+            "batch_run_id": batch_run_id,
+            "run_number": run_number,
+            "team_id": str(team_id)
+        } if batch_run_id else {"trigger": "manual"}
     }
     
     job_response = supabase.table("analysis_jobs").insert(job_insert).execute()

@@ -266,7 +266,7 @@ class DataMapper:
             except Exception as e:
                 batch_logger.error(f"Failed to save team members: {e}")
             
-            # 5. Create analysis snapshot if this is part of a batch run
+            # 5. Create analysis snapshot if this is part of a batch run or manual run
             try:
                 from src.api.backend.database import get_supabase_admin_client
                 supabase = get_supabase_admin_client()
@@ -280,19 +280,38 @@ class DataMapper:
                     batch_id = project.get("batch_id")
                     
                     if team_id and batch_id:
-                        # Check if there's an active batch run
-                        run_result = supabase.table("batch_analysis_runs")\
-                            .select("id, run_number")\
-                            .eq("batch_id", batch_id)\
-                            .eq("status", "running")\
-                            .order("run_number", desc=True)\
+                        batch_run_id = None
+                        run_number = None
+
+                        # Prefer job metadata (manual or batch) if available
+                        job_result = supabase.table("analysis_jobs")\
+                            .select("metadata, run_number")\
+                            .eq("project_id", str(project_id))\
+                            .order("started_at", desc=True)\
                             .limit(1)\
                             .execute()
+
+                        if job_result.data:
+                            job = job_result.data[0]
+                            metadata = job.get("metadata") or {}
+                            batch_run_id = metadata.get("batch_run_id")
+                            run_number = metadata.get("run_number") or job.get("run_number")
+
+                        # Fallback to the latest running batch run if metadata is missing
+                        if not batch_run_id or not run_number:
+                            run_result = supabase.table("batch_analysis_runs")\
+                                .select("id, run_number")\
+                                .eq("batch_id", batch_id)\
+                                .eq("status", "running")\
+                                .order("run_number", desc=True)\
+                                .limit(1)\
+                                .execute()
+                            if run_result.data:
+                                batch_run = run_result.data[0]
+                                batch_run_id = batch_run["id"]
+                                run_number = batch_run["run_number"]
                         
-                        if run_result.data and len(run_result.data) > 0:
-                            batch_run = run_result.data[0]
-                            batch_run_id = batch_run["id"]
-                            run_number = batch_run["run_number"]
+                        if batch_run_id and run_number:
                             
                             # Create snapshot
                             snapshot_data = {
@@ -313,7 +332,8 @@ class DataMapper:
                                 "file_count": len(report.get("files", [])),
                                 "lines_of_code": sum(f.get("lines", 0) for f in report.get("files", [])),
                                 "tech_stack_count": len(report.get("stack", [])),
-                                "issue_count": len(report.get("security", {}).get("issues", []))
+                                "issue_count": len(report.get("security", {}).get("issues", [])),
+                                "analyzed_at": datetime.now().isoformat()
                             }
                             
                             # Insert or update snapshot (in case of re-analysis)
