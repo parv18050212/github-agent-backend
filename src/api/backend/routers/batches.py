@@ -751,11 +751,35 @@ async def delete_batch(
                 detail="Batch not found"
             )
         
-        # Delete batch (cascade will handle related records)
-        result = supabase.table("batches")\
-            .delete()\
-            .eq("id", str(batch_id))\
-            .execute()
+        # Cleanup related project data (projects are not cascaded by batch delete)
+        teams_response = supabase.table("teams").select("id, project_id").eq("batch_id", str(batch_id)).execute()
+        teams_data = teams_response.data or []
+
+        team_ids = [team.get("id") for team in teams_data if team.get("id")]
+        project_ids = {team.get("project_id") for team in teams_data if team.get("project_id")}
+
+        projects_response = supabase.table("projects").select("id").eq("batch_id", str(batch_id)).execute()
+        for project in projects_response.data or []:
+            if project.get("id"):
+                project_ids.add(project.get("id"))
+
+        project_id_list = list(project_ids)
+
+        if project_id_list:
+            supabase.table("analysis_jobs").delete().in_("project_id", project_id_list).execute()
+            supabase.table("analysis_snapshots").delete().in_("project_id", project_id_list).execute()
+            supabase.table("issues").delete().in_("project_id", project_id_list).execute()
+            supabase.table("project_comments").delete().in_("project_id", project_id_list).execute()
+            supabase.table("tech_stack").delete().in_("project_id", project_id_list).execute()
+            supabase.table("team_members").delete().in_("project_id", project_id_list).execute()
+            supabase.table("projects").delete().in_("id", project_id_list).execute()
+
+        if team_ids:
+            supabase.table("mentor_team_assignments").delete().in_("team_id", team_ids).execute()
+            supabase.table("students").delete().in_("team_id", team_ids).execute()
+
+        # Delete batch (cascade will handle remaining team records)
+        supabase.table("batches").delete().eq("id", str(batch_id)).execute()
         
         return None
         

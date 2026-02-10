@@ -421,6 +421,12 @@ async def clear_all_teams(
         if project.get("id"):
             project_ids.add(project.get("id"))
 
+    if team_ids:
+        team_projects_response = supabase.table("projects").select("id").in_("team_id", team_ids).execute()
+        for project in team_projects_response.data or []:
+            if project.get("id"):
+                project_ids.add(project.get("id"))
+
     project_id_list = list(project_ids)
 
     if project_id_list:
@@ -436,6 +442,8 @@ async def clear_all_teams(
         supabase.table("students").delete().in_("team_id", team_ids).execute()
 
     supabase.table("teams").delete().eq("batch_id", str(batch_id)).execute()
+    if project_id_list:
+        supabase.table("projects").delete().in_("id", project_id_list).execute()
     supabase.table("projects").delete().eq("batch_id", str(batch_id)).execute()
 
     return MessageResponse(success=True, message="Deleted all teams for this batch")
