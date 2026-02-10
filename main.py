@@ -42,7 +42,7 @@ app = FastAPI(
 Instrumentator(
     should_group_status_codes=False,
     should_ignore_untemplated=True,
-    should_respect_env_var=True,
+    should_respect_env_var=False,
     excluded_handlers=["/metrics"],
 ).instrument(app).expose(app)
 
