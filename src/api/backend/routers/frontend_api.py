@@ -8,7 +8,7 @@ from uuid import UUID
 import csv
 import io
 
-from src.api.backend.crud import ProjectCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD, AnalysisJobCRUD
+from src.api.backend.crud import TeamCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD, AnalysisJobCRUD
 from src.api.backend.services.frontend_adapter import FrontendAdapter
 from src.api.backend.background import run_analysis_job
 from src.api.backend.utils.cache import cache, RedisCache
@@ -17,267 +17,12 @@ router = APIRouter(prefix="/api", tags=["frontend"])
 
 
 
-@router.get("/projects/{project_id}")
-async def get_project_detail(project_id: str):
-    """Get detailed project evaluation (matches frontend ProjectEvaluation)"""
-    try:
-        # Check cache first
-        cache_key = f"hackeval:project:{project_id}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            return cached_result
-        
-        # Get project
-        project = ProjectCRUD.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        # Get related data
-        tech_stack = TechStackCRUD.get_tech_stack(project_id)
-        issues = IssueCRUD.get_issues(project_id)
-        team_members = TeamMemberCRUD.get_team_members(project_id)
-        
-        # Get report_json if available
-        report_json = project.get("report_json")
-        
-        # Transform to frontend format
-        result = FrontendAdapter.transform_project_response(
-            project, tech_stack, issues, team_members, report_json
-        )
-        
-        # Cache with status-appropriate TTL
-        if project.get("status") == "completed":
-            # Completed projects rarely change - cache for 5 minutes
-            cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
-        elif project.get("status") in ["pending", "processing"]:
-            # Processing projects change frequently - cache for 30 seconds to reduce rapid refreshes
-            cache.set(cache_key, result, RedisCache.TTL_SHORT)
-        elif project.get("status") == "failed":
-            # Failed projects don't change - cache for 5 minutes
-            cache.set(cache_key, result, RedisCache.TTL_MEDIUM)
-        
-        return result
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/projects/{project_id}/tree")
-async def get_project_tree(project_id: str):
-    """Get repository structure tree"""
-    try:
-        # Check cache first
-        cache_key = f"hackeval:tree:{project_id}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            return cached_result
-        
-        # Get project
-        project = ProjectCRUD.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        # Get tree from report_json
-        report_json = project.get("report_json", {})
-        print(f"[DEBUG] report_json keys: {list(report_json.keys())}")
-        tree_text = report_json.get("repo_tree", "Repository structure not available")
-        print(f"[DEBUG] repo_tree exists: {'repo_tree' in report_json}")
-        print(f"[DEBUG] tree_text length: {len(tree_text) if tree_text else 0}")
-        
-        result = {
-            "projectId": project_id,
-            "tree": tree_text
-        }
-        
-        # Cache for 1 hour (tree doesn't change)
-        cache.set(cache_key, result, RedisCache.TTL_LONG)
-        
-        return result
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/projects/{project_id}/commits")
-async def get_project_commits(project_id: str, author: Optional[str] = Query(None)):
-    """Get detailed commit history with authors. If author is specified, return individual commits."""
-    try:
-        # Check cache first (skip cache for debugging)
-        cache_key = f"hackeval:commits:{project_id}:{author or 'all'}"
-        # cached_result = cache.get(cache_key)
-        # if cached_result:
-        #     return cached_result
-        
-        # Get project
-        project = ProjectCRUD.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        # Get commit details from report_json
-        report_json = project.get("report_json", {})
-        
-        print(f"[DEBUG] report_json keys: {list(report_json.keys())}")
-        
-        # Try commit_details first (newer format), fall back to team field (older format)
-        commit_details = report_json.get("commit_details", {})
-        print(f"[DEBUG] commit_details keys: {list(commit_details.keys())}")
-        
-        author_stats = commit_details.get("author_stats", {})
-        
-        # Fallback: check if data is in "team" field (this is where agent.py stores it)
-        if not author_stats:
-            author_stats = report_json.get("team", {})
-        
-        # If author is specified, return their individual commits
-        if author:
-            all_commits = commit_details.get("all_commits", [])
-            print(f"[DEBUG] Total commits in DB: {len(all_commits)}")
-            print(f"[DEBUG] Filtering for author: {author}")
-            author_commits = [c for c in all_commits if c["author"] == author]
-            print(f"[DEBUG] Found {len(author_commits)} commits for {author}")
-            # Sort by date descending (newest first)
-            author_commits.sort(key=lambda x: x["date"], reverse=True)
-            
-            result = {
-                "projectId": project_id,
-                "author": author,
-                "commits": author_commits
-            }
-        else:
-            # Return aggregated stats for all authors
-            print(f"[DEBUG] Project {project_id}: Found {len(author_stats)} authors")
-            print(f"[DEBUG] Authors: {list(author_stats.keys())}")
-            
-            commits = []
-            for author_name, stats in author_stats.items():
-                commits.append({
-                    "author": author_name,
-                    "commits": stats.get("commits", 0),
-                    "linesChanged": stats.get("lines_changed", 0),
-                    "activeDays": stats.get("active_days_count", 0),
-                    "topFileTypes": stats.get("top_file_types", "")
-                })
-            
-            # Sort by commits descending
-            commits.sort(key=lambda x: x["commits"], reverse=True)
-            
-            result = {
-                "projectId": project_id,
-                "totalCommits": commit_details.get("total_commits") or report_json.get("total_commits", 0),
-                "authors": commits
-            }
-        
-        # Cache for 1 hour
-        cache.set(cache_key, result, RedisCache.TTL_LONG)
-        
-        return result
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        print(f"[ERROR] Commits endpoint failed: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/projects")
-async def list_projects(
-    status: Optional[str] = Query(None),
-    tech: Optional[str] = Query(None),
-    sort: str = Query("recent", pattern="^(recent|score)$"),
-    search: Optional[str] = Query(None)
-):
-    """List all projects with filters (matches frontend ProjectListItem[])""" 
-    try:
-        # Check cache (only for unfiltered queries)
-        cache_key = f"hackeval:projects:{status}:{tech}:{sort}:{search}"
-        if not search:  # Don't cache search queries
-            cached_result = cache.get(cache_key)
-            if cached_result:
-                return cached_result
-        from ..database import get_supabase_admin_client
-        supabase = get_supabase_admin_client()
-
-        query = supabase.table("projects").select(
-            "id, team_name, repo_url, status, total_score, quality_score, security_score, "
-            "originality_score, engineering_score, documentation_score, created_at"
-        )
-
-        if status and status != "all":
-            query = query.eq("status", status)
-
-        if search:
-                query = query.or_(f"team_name.ilike.%{search}%,repo_url.ilike.%{search}%")
-
-        if sort == "score":
-            query = query.order("total_score", desc=True)
-        else:
-            query = query.order("created_at", desc=True)
-
-        result = query.execute()
-        projects = result.data or []
-
-        project_ids = [p["id"] for p in projects]
-        if not project_ids:
-            return []
-        
-        # Single query for all tech stacks
-        tech_response = supabase.table("tech_stack").select("project_id, technology").in_("project_id", project_ids).execute()
-        tech_map = {}
-        for tech_item in (tech_response.data or []):
-            pid = tech_item["project_id"]
-            if pid not in tech_map:
-                tech_map[pid] = []
-            tech_map[pid].append(tech_item)
-
-        if tech:
-            projects = [
-                project for project in projects
-                if tech in [t.get("technology") for t in tech_map.get(project["id"], [])]
-            ]
-            project_ids = [p["id"] for p in projects]
-            if not project_ids:
-                return []
-
-        # Single query for all issues (only if needed for security count)
-        issues_response = supabase.table("issues").select("project_id, type").in_("project_id", project_ids).execute()
-        issues_map = {}
-        for issue in (issues_response.data or []):
-            pid = issue["project_id"]
-            if pid not in issues_map:
-                issues_map[pid] = []
-            issues_map[pid].append(issue)
-        
-        # Transform each project using pre-fetched data
-        results = []
-        for project in projects:
-            pid = project["id"]
-            tech_stack = tech_map.get(pid, [])
-            
-            # Filter by tech if specified
-            if tech:
-                tech_names = [t.get("technology") for t in tech_stack]
-                if tech not in tech_names:
-                    continue
-            
-            # Count security issues from pre-fetched data
-            issues = issues_map.get(pid, [])
-            security_count = len([i for i in issues if i.get("type") == "security"])
-            
-            item = FrontendAdapter.transform_project_list_item(project, tech_stack, security_count)
-            results.append(item)
-        
-        # Cache for 30 seconds
-        if not search:
-            cache.set(cache_key, results, RedisCache.TTL_SHORT)
-        
-        return results
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/leaderboard")
@@ -292,7 +37,10 @@ async def get_leaderboard(
     page_size: int = Query(100, ge=1, le=1000),
     batch_id: Optional[str] = Query(None)
 ):
-    """Get leaderboard with filters (matches frontend LeaderboardEntry[])""" 
+    """
+    Get leaderboard with filters (matches frontend LeaderboardEntry[])
+    Note: Now queries teams table since projects table is dropped
+    """ 
     try:
         from ..database import get_supabase_admin_client
         supabase = get_supabase_admin_client()
@@ -316,21 +64,15 @@ async def get_leaderboard(
             return cached_result
         
         # OPTIMIZED: Single query with status filter, sorting, and tech stack join
-        # This replaces multiple round-trips with one efficient query
-        query = supabase.table("projects").select(
+        # Query teams table instead of projects
+        query = supabase.table("teams").select(
             "id, team_name, repo_url, total_score, quality_score, security_score, "
-            "originality_score, engineering_score, documentation_score, verdict, team_id, status"
+            "originality_score, engineering_score, documentation_score, verdict, status"
         ).eq("status", "completed")
         
         # Apply batch filter if specified
         if batch_id:
-            # Get project IDs from teams in this batch first
-            teams_response = supabase.table("teams").select("project_id").eq("batch_id", batch_id).execute()
-            batch_project_ids = [t["project_id"] for t in teams_response.data if t.get("project_id")]
-            if batch_project_ids:
-                query = query.in_("id", batch_project_ids)
-            else:
-                return {"leaderboard": [], "total": 0, "page": page, "page_size": page_size}
+            query = query.eq("batch_id", batch_id)
         
         # Apply search filter at database level
         if search:
@@ -341,29 +83,29 @@ async def get_leaderboard(
         
         # Execute optimized query
         result = query.execute()
-        projects = result.data or []
+        teams = result.data or []
         
-        # Early return if no projects
-        if not projects:
+        # Early return if no teams
+        if not teams:
             return {"leaderboard": [], "total": 0, "page": page, "page_size": page_size}
         
-        # Get project IDs for tech stack fetch
-        project_ids = [p["id"] for p in projects]
+        # Get team IDs for tech stack fetch
+        team_ids = [t["id"] for t in teams]
         
-        # Single query for all tech stacks
-        tech_response = supabase.table("tech_stack").select("project_id, technology").in_("project_id", project_ids).execute()
+        # Single query for all tech stacks (using team_id)
+        tech_response = supabase.table("tech_stack").select("team_id, technology").in_("team_id", team_ids).execute()
         tech_map = {}
         for tech_item in (tech_response.data or []):  # Use tech_item to avoid shadowing 'tech' query param
-            pid = tech_item["project_id"]
-            if pid not in tech_map:
-                tech_map[pid] = []
-            tech_map[pid].append(tech_item)
+            tid = tech_item["team_id"]
+            if tid not in tech_map:
+                tech_map[tid] = []
+            tech_map[tid].append(tech_item)
         
         # Transform using pre-fetched data
         results = []
-        for project in projects:
-            pid = project["id"]
-            tech_stack = tech_map.get(pid, [])
+        for team in teams:
+            tid = team["id"]
+            tech_stack = tech_map.get(tid, [])
             
             # Filter by tech if specified
             if tech:
@@ -371,7 +113,7 @@ async def get_leaderboard(
                 if tech not in tech_names:
                     continue
             
-            item = FrontendAdapter.transform_leaderboard_item(project, tech_stack)
+            item = FrontendAdapter.transform_leaderboard_item(team, tech_stack)
             results.append(item)
 
         # Add rank after filtering/sorting
@@ -398,7 +140,10 @@ async def get_leaderboard(
 
 @router.get("/leaderboard/chart")
 async def get_leaderboard_chart():
-    """Get leaderboard data for chart visualization"""
+    """
+    Get leaderboard data for chart visualization
+    Note: Now queries teams table since projects table is dropped
+    """
     try:
         # Check cache
         cache_key = "hackeval:leaderboard:chart"
@@ -406,22 +151,27 @@ async def get_leaderboard_chart():
         if cached_result:
             return cached_result
         
-        projects, _ = ProjectCRUD.list_projects()
-        completed = [p for p in projects if p.get("status") == "completed"]
+        from ..database import get_supabase_admin_client
+        supabase = get_supabase_admin_client()
         
-        # Top 10 by total score
-        top_projects = sorted(completed, key=lambda x: x.get("total_score") or 0, reverse=True)[:10]
+        # Query teams table for completed teams
+        result = supabase.table("teams").select(
+            "team_name, total_score, quality_score, security_score, originality_score, "
+            "engineering_score, documentation_score"
+        ).eq("status", "completed").order("total_score", desc=True).limit(10).execute()
+        
+        teams = result.data or []
         
         chart_data = []
-        for project in top_projects:
+        for team in teams:
             chart_data.append({
-                "teamName": project.get("team_name"),
-                "totalScore": project.get("total_score") or 0,
-                "qualityScore": project.get("quality_score") or 0,
-                "securityScore": project.get("security_score") or 0,
-                "originalityScore": project.get("originality_score") or 0,
-                "architectureScore": project.get("engineering_score") or 0,
-                "documentationScore": project.get("documentation_score") or 0
+                "teamName": team.get("team_name"),
+                "totalScore": team.get("total_score") or 0,
+                "qualityScore": team.get("quality_score") or 0,
+                "securityScore": team.get("security_score") or 0,
+                "originalityScore": team.get("originality_score") or 0,
+                "architectureScore": team.get("engineering_score") or 0,
+                "documentationScore": team.get("documentation_score") or 0
             })
         
         # Cache for 1 minute
@@ -435,7 +185,10 @@ async def get_leaderboard_chart():
 
 @router.get("/stats")
 async def get_dashboard_stats():
-    """Get aggregate statistics for dashboard"""
+    """
+    Get aggregate statistics for dashboard
+    Note: Now queries teams table since projects table is dropped
+    """
     try:
         # Check cache
         cache_key = "hackeval:stats"
@@ -443,33 +196,40 @@ async def get_dashboard_stats():
         if cached_result:
             return cached_result
         
-        projects, total_projects = ProjectCRUD.list_projects()
+        from ..database import get_supabase_admin_client
+        supabase = get_supabase_admin_client()
         
-        completed = [p for p in projects if p.get("status") == "completed"]
-        in_progress = [p for p in projects if p.get("status") in ["pending", "processing"]]
+        # Query teams table
+        result = supabase.table("teams").select("id, status, total_score").execute()
+        teams = result.data or []
+        
+        completed = [t for t in teams if t.get("status") == "completed"]
+        in_progress = [t for t in teams if t.get("status") in ["pending", "processing", "analyzing"]]
         
         avg_score = 0
         if completed:
-            total_scores = sum(p.get("total_score") or 0 for p in completed)
+            total_scores = sum(t.get("total_score") or 0 for t in completed)
             avg_score = round(total_scores / len(completed), 1)
         
         # Get all tech stacks
         all_tech = set()
-        for project in completed:
-            tech_stack = TechStackCRUD.get_tech_stack(project["id"])
-            for tech in tech_stack:
+        if completed:
+            team_ids = [t["id"] for t in completed]
+            tech_result = supabase.table("tech_stack").select("technology").in_("team_id", team_ids).execute()
+            for tech in (tech_result.data or []):
                 tech_name = tech.get("technology")
                 if tech_name:
                     all_tech.add(tech_name)
         
         # Count security issues
         total_issues = 0
-        for project in completed:
-            issues = IssueCRUD.get_issues(project["id"])
-            total_issues += len([i for i in issues if i.get("type") == "security"])
+        if completed:
+            team_ids = [t["id"] for t in completed]
+            issues_result = supabase.table("issues").select("type").in_("team_id", team_ids).execute()
+            total_issues = len([i for i in (issues_result.data or []) if i.get("type") == "security"])
         
         result = {
-            "totalProjects": len(projects),
+            "totalProjects": len(teams),
             "completedProjects": len(completed),
             "pendingProjects": len(in_progress),  # Changed from inProgressProjects
             "averageScore": avg_score,  # Changed from avgScore
@@ -485,66 +245,14 @@ async def get_dashboard_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/projects/clear-all")
-async def clear_all_projects():
-    """Delete all projects from database (dangerous operation)"""
-    try:
-        from ..crud import get_supabase_client
-        supabase = get_supabase_client()
-        
-        # Get all projects
-        projects, total = ProjectCRUD.list_projects()
-        
-        deleted_count = 0
-        failed_count = 0
-        
-        for project in projects:
-            try:
-                project_id = project.get("id")
-                
-                # Delete related records first to avoid FK constraint violations
-                # Delete tech_stack
-                supabase.table("tech_stack").delete().eq("project_id", project_id).execute()
-                
-                # Delete team_members
-                supabase.table("team_members").delete().eq("project_id", project_id).execute()
-                
-                # Delete analysis_jobs
-                supabase.table("analysis_jobs").delete().eq("project_id", project_id).execute()
-                
-                # Delete project
-                ProjectCRUD.delete_project(project_id)
-                
-                # Invalidate caches
-                cache.delete(f"hackeval:project:{project_id}")
-                cache.delete(f"hackeval:tree:{project_id}")
-                cache.delete(f"hackeval:commits:{project_id}")
-                
-                deleted_count += 1
-            except Exception as e:
-                print(f"Failed to delete project {project_id}: {e}")
-                failed_count += 1
-        
-        # Clear all list caches
-        cache.delete("hackeval:projects:*")
-        cache.delete("hackeval:leaderboard")
-        cache.delete("hackeval:stats")
-        cache.delete("hackeval:tech-stacks")
-        
-        return {
-            "success": True,
-            "deleted": deleted_count,
-            "failed": failed_count,
-            "message": f"Cleared {deleted_count} projects from database"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/tech-stacks")
 async def get_available_technologies():
-    """Get list of all technologies used across projects"""
+    """
+    Get list of all technologies used across projects
+    Note: Now queries teams table since projects table is dropped
+    """
     try:
         # Check cache
         cache_key = "hackeval:tech-stacks"
@@ -552,12 +260,18 @@ async def get_available_technologies():
         if cached_result:
             return cached_result
         
-        projects, _ = ProjectCRUD.list_projects()
+        from ..database import get_supabase_admin_client
+        supabase = get_supabase_admin_client()
+        
+        # Get all teams
+        teams_result = supabase.table("teams").select("id").execute()
+        teams = teams_result.data or []
         
         tech_count = {}
-        for project in projects:
-            tech_stack = TechStackCRUD.get_tech_stack(project["id"])
-            for tech in tech_stack:
+        if teams:
+            team_ids = [t["id"] for t in teams]
+            tech_result = supabase.table("tech_stack").select("technology").in_("team_id", team_ids).execute()
+            for tech in (tech_result.data or []):
                 name = tech.get("technology")
                 if name:
                     tech_count[name] = tech_count.get(name, 0) + 1
@@ -576,30 +290,6 @@ async def get_available_technologies():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/projects/{project_id}")
-async def delete_project(project_id: str):
-    """Delete a project and all related data"""
-    try:
-        # Delete related data first
-        TechStackCRUD.delete_by_project(project_id)
-        IssueCRUD.delete_by_project(project_id)
-        TeamMemberCRUD.delete_by_project(project_id)
-        AnalysisJobCRUD.delete_by_project(project_id)
-        
-        # Delete project
-        success = ProjectCRUD.delete_project(project_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        # Invalidate caches
-        cache.invalidate_project(project_id)
-        
-        return {"message": "Project deleted successfully"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/batch-upload")
@@ -611,9 +301,11 @@ async def batch_upload(
     Batch upload projects from CSV file - SEQUENTIAL PROCESSING
     Expected CSV columns: teamName, repoUrl, description (optional)
     
+    Note: Now creates teams instead of projects since projects table is dropped
+    
     Returns batchId for tracking progress via /api/batch/{batch_id}/status
     """
-    from src.api.backend.crud import BatchCRUD
+    from src.api.backend.crud import BatchCRUD, TeamCRUD
     from src.api.backend.background import run_batch_sequential
     
     try:
@@ -638,7 +330,7 @@ async def batch_upload(
                 detail="CSV missing required columns: teamName/team_name, repoUrl/repo_url"
             )
         
-        # First pass: validate all rows and create projects/jobs
+        # First pass: validate all rows and create teams/jobs
         repos_to_process = []
         failed_rows = []
         
@@ -663,8 +355,8 @@ async def batch_upload(
                 continue
             
             try:
-                # Check if already exists
-                existing = ProjectCRUD.get_project_by_url(repo_url)
+                # Check if team already exists with this repo URL
+                existing = TeamCRUD.get_team_by_url(repo_url)
                 if existing and existing.get("status") in ["analyzing", "completed"]:
                     failed_rows.append({
                         "row": row_num,
@@ -674,18 +366,29 @@ async def batch_upload(
                     })
                     continue
                 
-                # Create project
+                # Create or update team
                 if existing:
-                    project_id = UUID(existing["id"])
+                    team_id = UUID(existing["id"])
                 else:
-                    project = ProjectCRUD.create_project(
-                        repo_url=repo_url,
-                        team_name=team_name
-                    )
-                    project_id = UUID(project["id"])
+                    # Create new team (simplified - no batch_id for now)
+                    from ..database import get_supabase_admin_client
+                    supabase = get_supabase_admin_client()
+                    
+                    team_data = {
+                        "id": str(uuid4()),
+                        "team_name": team_name,
+                        "repo_url": repo_url,
+                        "status": "pending"
+                    }
+                    
+                    team_response = supabase.table("teams").insert(team_data).execute()
+                    if not team_response.data:
+                        raise Exception("Failed to create team")
+                    
+                    team_id = UUID(team_response.data[0]["id"])
                 
                 # Create job
-                job = AnalysisJobCRUD.create_job(project_id)
+                job = AnalysisJobCRUD.create_job(team_id)
                 job_id = UUID(job["id"])
                 
                 # Add to processing queue
@@ -693,7 +396,7 @@ async def batch_upload(
                     "row": row_num,
                     "team_name": team_name,
                     "repo_url": repo_url,
-                    "project_id": str(project_id),
+                    "project_id": str(team_id),  # Keep as project_id for backward compatibility
                     "job_id": str(job_id)
                 })
                 
@@ -727,7 +430,7 @@ async def batch_upload(
                 "teamName": r["team_name"],
                 "repoUrl": r["repo_url"],
                 "jobId": r["job_id"],
-                "projectId": r["project_id"]
+                "projectId": r["project_id"]  # Keep as projectId for backward compatibility
             }
             for r in repos_to_process
         ]
@@ -739,7 +442,7 @@ async def batch_upload(
             "total": len(repos_to_process) + len(failed_rows),
             "queued": queued_jobs,
             "errors": failed_rows,
-            "message": f"Successfully queued {len(repos_to_process)} projects for sequential processing, {len(failed_rows)} failed"
+            "message": f"Successfully queued {len(repos_to_process)} teams for sequential processing, {len(failed_rows)} failed"
         }
         
     except HTTPException:

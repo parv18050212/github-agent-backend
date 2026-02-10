@@ -216,10 +216,8 @@ async def get_team_analytics(
     # Verify access
     team = await verify_team_access(teamId, current_user, supabase)
     
-    # Get associated project (analysis results)
-    project_id = team.get("project_id")
-    
-    if not project_id:
+    # Check if team has been analyzed (status should be 'completed')
+    if not team.get("status") or team.get("status") == "pending":
         # Team hasn't been analyzed yet
         return {
             "teamId": teamId,
@@ -278,14 +276,8 @@ async def get_team_analytics(
             "languageBreakdown": []
         }
     
-
-    # Get project analysis data
-    project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
-    
-    if not project_response.data:
-        raise HTTPException(status_code=404, detail="Project analysis not found")
-    
-    project = project_response.data[0]
+    # Use team data directly (analysis results are now in teams table)
+    project = team
     
     report_json = project.get("report_json") or {}
     if isinstance(report_json, str):
@@ -674,10 +666,8 @@ async def get_team_commits(
     # Verify access
     team = await verify_team_access(teamId, current_user, supabase)
     
-    # Get associated project
-    project_id = team.get("project_id")
-    
-    if not project_id:
+    # Check if team has been analyzed
+    if not team.get("status") or team.get("status") == "pending":
         return {
             "commits": [],
             "total": 0,
@@ -685,18 +675,8 @@ async def get_team_commits(
             "pageSize": pageSize
         }
     
-    # Get project analysis data
-    project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
-    
-    if not project_response.data:
-        return {
-            "commits": [],
-            "total": 0,
-            "page": page,
-            "pageSize": pageSize
-        }
-    
-    project = project_response.data[0]
+    # Use team data directly (analysis results are now in teams table)
+    project = team
     
     # Try to get report data from report_json (preferred) or analysis_result
     report = project.get("report_json")
@@ -796,27 +776,16 @@ async def get_team_file_tree(
     # Verify access
     team = await verify_team_access(teamId, current_user, supabase)
     
-    # Get associated project
-    project_id = team.get("project_id")
-    
-    if not project_id:
+    # Check if team has been analyzed
+    if not team.get("status") or team.get("status") == "pending":
         return {
             "tree": [],
             "totalFiles": 0,
             "totalSize": 0
         }
     
-    # Get project analysis data
-    project_response = supabase.table("projects").select("*").eq("id", project_id).execute()
-    
-    if not project_response.data:
-        return {
-            "tree": [],
-            "totalFiles": 0,
-            "totalSize": 0
-        }
-    
-    project = project_response.data[0]
+    # Use team data directly (analysis results are now in teams table)
+    project = team
     report = project.get("report_json") or project.get("analysis_result") or {}
 
     if isinstance(report, str):

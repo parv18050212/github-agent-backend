@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.core.agent import build_pipeline
 from src.api.backend.utils.progress_tracker import ProgressTracker
 from src.api.backend.services.data_mapper import DataMapper
-from src.api.backend.crud import ProjectCRUD
+from src.api.backend.crud import TeamCRUD
 from src.utils.git_utils import cleanup_repo
 
 
@@ -75,7 +75,7 @@ class AnalyzerService:
         Run full analysis pipeline on a repository
         
         Args:
-            project_id: UUID of the project
+            project_id: UUID of the project (now same as team_id for backward compatibility)
             job_id: UUID of the analysis job
             repo_url: GitHub repository URL
             team_name: Optional team name
@@ -87,8 +87,8 @@ class AnalyzerService:
         repo_path = None
         
         try:
-            # Update project status
-            ProjectCRUD.update_project_status(project_id, "analyzing")
+            # Update team status (project_id is now team_id)
+            TeamCRUD.update_team_status(project_id, "analyzing")
             tracker.update("starting")
             
             # Prepare output directory
@@ -170,7 +170,7 @@ class AnalyzerService:
             print(f"{'='*60}\n")
             
             tracker.fail(error_msg)
-            ProjectCRUD.update_project_status(project_id, "failed")
+            TeamCRUD.update_team_status(project_id, "failed")
             
             raise
         

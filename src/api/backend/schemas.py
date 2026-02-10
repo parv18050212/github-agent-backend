@@ -30,14 +30,7 @@ class BatchUploadRequest(BaseModel):
     repos: List[AnalyzeRepoRequest] = Field(..., min_items=1, max_items=50)
 
 
-class ProjectFilterParams(BaseModel):
-    """Query parameters for filtering projects"""
-    status: Optional[str] = None
-    min_score: Optional[float] = Field(None, ge=0, le=100)
-    max_score: Optional[float] = Field(None, ge=0, le=100)
-    team_name: Optional[str] = None
-    page: int = Field(1, ge=1)
-    page_size: int = Field(20, ge=1, le=100)
+# Project filter params removed - use team filtering instead
 
 
 class LeaderboardParams(BaseModel):
@@ -54,7 +47,7 @@ class LeaderboardParams(BaseModel):
 class AnalyzeRepoResponse(BaseModel):
     """Response from analyze-repo endpoint"""
     job_id: UUID
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     status: str
     message: str = "Analysis queued successfully"
 
@@ -69,7 +62,7 @@ class BatchUploadResponse(BaseModel):
 class AnalysisStatusResponse(BaseModel):
     """Response for analysis status"""
     job_id: UUID
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     status: str  # queued, running, completed, failed
     progress: int  # 0-100
     current_stage: Optional[str] = None
@@ -83,7 +76,7 @@ class AnalysisStatusResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "job_id": "123e4567-e89b-12d3-a456-426614174000",
-                "project_id": "987fcdeb-51a2-43f1-b9e5-ac4c5d6e7890",
+                "team_id": "987fcdeb-51a2-43f1-b9e5-ac4c5d6e7890",
                 "status": "running",
                 "progress": 45,
                 "current_stage": "security_scan",
@@ -97,7 +90,7 @@ class AnalysisStatusResponse(BaseModel):
 class AnalysisJobListItem(BaseModel):
     """Analysis job list item"""
     job_id: Optional[UUID] = None
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     repo_url: str
     team_name: Optional[str] = None
     status: str
@@ -199,7 +192,7 @@ class TeamMemberItem(BaseModel):
 
 class AnalysisResultResponse(BaseModel):
     """Full analysis result"""
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     repo_url: str
     team_name: Optional[str] = None
     status: str
@@ -226,25 +219,7 @@ class AnalysisResultResponse(BaseModel):
     report_json: Optional[Dict[str, Any]] = None
 
 
-class ProjectListItem(BaseModel):
-    """Project list item (summary)"""
-    id: UUID
-    repo_url: str
-    team_name: Optional[str] = None
-    status: str
-    total_score: Optional[float] = None
-    verdict: Optional[str] = None
-    created_at: datetime
-    analyzed_at: Optional[datetime] = None
-
-
-class ProjectListResponse(BaseModel):
-    """Response for project list"""
-    projects: List[ProjectListItem]
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
+# Project list/detail schemas removed - use Team schemas instead
 
 
 class LeaderboardItem(BaseModel):
@@ -270,67 +245,7 @@ class LeaderboardResponse(BaseModel):
     page_size: int
 
 
-class ProjectDetailResponse(BaseModel):
-    """Enhanced project detail response matching frontend"""
-    # Identity
-    id: UUID
-    teamName: Optional[str] = None
-    repoUrl: str
-    submittedAt: datetime
-    status: str
-    
-    # Tech Stack
-    techStack: List[str] = []  # Technology names as strings
-    languages: List[LanguageBreakdown] = []
-    architecturePattern: str = "Monolithic"
-    frameworks: List[str] = []
-    
-    # Flat Scores (not nested)
-    totalScore: float = 0
-    qualityScore: float = 0
-    securityScore: float = 0
-    originalityScore: float = 0
-    architectureScore: float = 0
-    documentationScore: float = 0
-    
-    # Commit Forensics
-    totalCommits: int = 0
-    contributors: List[ContributorDetail] = []
-    commitPatterns: List[CommitPattern] = []
-    burstCommitWarning: bool = False
-    lastMinuteCommits: int = 0
-    
-    # Security
-    securityIssues: List[SecurityIssue] = []
-    secretsDetected: int = 0
-    
-    # AI Analysis
-    aiGeneratedPercentage: float = 0
-    aiVerdict: Optional[str] = None
-    strengths: List[str] = []
-    improvements: List[str] = []
-    
-    # Project Stats
-    totalFiles: int = 0
-    totalLinesOfCode: int = 0
-    testCoverage: float = 0
-
-
-class ProjectListItemResponse(BaseModel):
-    """Project list item response matching frontend"""
-    id: UUID
-    teamName: Optional[str] = None
-    repoUrl: str
-    status: str
-    totalScore: float = 0
-    qualityScore: float = 0
-    securityScore: float = 0
-    originalityScore: float = 0
-    architectureScore: float = 0
-    documentationScore: float = 0
-    techStack: List[str] = []  # Top technologies as strings
-    securityIssues: int = 0  # Count
-    submittedAt: datetime
+# ProjectDetailResponse removed - use TeamDetailResponse instead
 
 
 class StatsResponse(BaseModel):
@@ -375,8 +290,8 @@ class TeamMemberRequest(BaseModel):
 
 
 class ProjectCommentRequest(BaseModel):
-    """Create a comment for a project"""
-    project_id: UUID
+    """Create a comment for a team"""
+    team_id: UUID  # Changed from project_id
     comment: str
     is_private: bool = False
 
@@ -384,7 +299,7 @@ class ProjectCommentRequest(BaseModel):
 class ProjectCommentResponse(BaseModel):
     """Returned project comment"""
     id: UUID
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     user_id: UUID
     comment: str
     is_private: bool = False
@@ -524,34 +439,75 @@ class TeamUpdateRequest(BaseModel):
 
 
 class TeamResponse(BaseModel):
-    """Team response"""
+    """Team response with analysis fields"""
     id: UUID
     batch_id: UUID
     team_name: str
-    project_id: Optional[UUID] = None
+    repo_url: Optional[str] = None
     mentor_id: Optional[UUID] = None
     student_count: int
+    
+    # Analysis Status
+    status: str = "pending"
+    
+    # Analysis Scores
+    total_score: Optional[float] = None
+    quality_score: Optional[float] = None
+    security_score: Optional[float] = None
+    originality_score: Optional[float] = None
+    architecture_score: Optional[float] = None
+    documentation_score: Optional[float] = None
+    effort_score: Optional[float] = None
+    implementation_score: Optional[float] = None
+    engineering_score: Optional[float] = None
+    organization_score: Optional[float] = None
+    
+    # Analysis Metadata
+    total_commits: Optional[int] = None
+    verdict: Optional[str] = None
+    ai_pros: Optional[List[str]] = None
+    ai_cons: Optional[List[str]] = None
+    report_json: Optional[Dict[str, Any]] = None
+    report_path: Optional[str] = None
+    viz_path: Optional[str] = None
+    
+    # Health Tracking
     health_status: str
     risk_flags: List[str]
     last_activity: Optional[datetime] = None
+    
+    # Timestamps
     created_at: datetime
     updated_at: datetime
+    analyzed_at: Optional[datetime] = None
+    last_analyzed_at: Optional[datetime] = None
 
 
 class TeamWithDetailsResponse(BaseModel):
-    """Team with students and project"""
+    """Team with students and analysis data"""
     id: UUID
     batch_id: UUID
     team_name: str
-    project_id: Optional[UUID] = None
+    repo_url: Optional[str] = None
     mentor_id: Optional[UUID] = None
     student_count: int
+    
+    # Analysis fields
+    status: str = "pending"
+    total_score: Optional[float] = None
+    quality_score: Optional[float] = None
+    security_score: Optional[float] = None
+    analyzed_at: Optional[datetime] = None
+    
+    # Health
     health_status: str
     risk_flags: List[str]
     last_activity: Optional[datetime] = None
+    
+    # Related data
     students: List["StudentResponse"] = []
-    project: Optional["ProjectListItemResponse"] = None
     mentor: Optional[UserProfileResponse] = None
+    
     created_at: datetime
     updated_at: datetime
 
@@ -891,7 +847,7 @@ class BulkUploadResponse(BaseModel):
 class AnalysisJobResponse(BaseModel):
     """Analysis job response"""
     job_id: Optional[UUID] = None
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     status: str
     message: str
 

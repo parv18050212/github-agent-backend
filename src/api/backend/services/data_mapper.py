@@ -5,7 +5,7 @@ Maps agent.py output to Supabase database format
 from typing import Dict, Any, List
 from uuid import UUID
 from datetime import datetime
-from src.api.backend.crud import ProjectCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
+from src.api.backend.crud import TeamCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
 from src.api.backend.utils.cache import cache
 from src.api.backend.utils.logger import batch_logger
 
@@ -175,11 +175,16 @@ class DataMapper:
     
     @staticmethod
     def save_analysis_results(project_id: UUID, report: Dict[str, Any]) -> bool:
-        """Save complete analysis results to database"""
+        """
+        Save complete analysis results to database
+        
+        Note: project_id parameter name kept for backward compatibility with Celery tasks,
+        but it now operates on the teams table (project_id == team_id after migration)
+        """
         import traceback
         
         try:
-            # 1. Update project with scores
+            # 1. Update team with scores (project_id is now team_id)
             scores = DataMapper.map_scores(report)
             
             judge = report.get("judge", {}) or {}
@@ -187,8 +192,8 @@ class DataMapper:
             ai_pros = judge.get("positive_feedback", "")
             ai_cons = judge.get("constructive_feedback", "")
             
-            # Map to actual database column names (user's schema)
-            project_data = {
+            # Map to actual database column names (teams table schema)
+            team_data = {
                 **scores,
                 "total_commits": report.get("total_commits", 0),
                 "verdict": str(verdict)[:255] if verdict else None,
@@ -221,23 +226,23 @@ class DataMapper:
                         "total_commits": report.get("total_commits", 0)
                     }
                 }
-                project_data["report_json"] = report_json
+                team_data["report_json"] = report_json
             except Exception as json_err:
                 batch_logger.warning(f"Could not build report_json: {json_err}")
             
             # Try saving with report_json first
-            batch_logger.info(f"Saving project data for {project_id}...")
+            batch_logger.info(f"Saving team data for {project_id}...")
             try:
-                ProjectCRUD.update_project(project_id, project_data)
-                batch_logger.info(f"Project data saved successfully")
+                TeamCRUD.update_team(project_id, team_data)
+                batch_logger.info(f"Team data saved successfully")
             except Exception as save_err:
                 batch_logger.warning(f"Save with report_json failed: {save_err}")
                 # Retry without report_json
-                if "report_json" in project_data:
-                    del project_data["report_json"]
+                if "report_json" in team_data:
+                    del team_data["report_json"]
                 batch_logger.info(f"Retrying without report_json...")
-                ProjectCRUD.update_project(project_id, project_data)
-                batch_logger.info(f"Project data saved (without report_json)")
+                TeamCRUD.update_team(project_id, team_data)
+                batch_logger.info(f"Team data saved (without report_json)")
             
             # 2. Save tech stack
             try:

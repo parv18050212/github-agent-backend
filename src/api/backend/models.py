@@ -7,50 +7,12 @@ from datetime import datetime
 from uuid import UUID
 
 
-class ProjectBase(BaseModel):
-    """Base project model"""
-    repo_url: str
-    team_name: Optional[str] = None
-
-
-class ProjectCreate(ProjectBase):
-    """Model for creating a new project"""
-    pass
-
-
-class Project(ProjectBase):
-    """Full project model with all fields"""
-    id: UUID
-    created_at: datetime
-    analyzed_at: Optional[datetime] = None
-    status: str = "pending"  # pending, analyzing, completed, failed
-    
-    # Scores (0-100)
-    total_score: Optional[float] = None
-    originality_score: Optional[float] = None
-    quality_score: Optional[float] = None
-    security_score: Optional[float] = None
-    effort_score: Optional[float] = None
-    implementation_score: Optional[float] = None
-    engineering_score: Optional[float] = None
-    organization_score: Optional[float] = None
-    documentation_score: Optional[float] = None
-    
-    # Metadata
-    total_commits: Optional[int] = None
-    verdict: Optional[str] = None  # Production Ready, Prototype, Broken
-    ai_pros: Optional[str] = None
-    ai_cons: Optional[str] = None
-    report_json: Optional[Dict[str, Any]] = None
-    viz_url: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
+# Project models removed - data now stored in Team model
 
 
 class AnalysisJobBase(BaseModel):
     """Base analysis job model"""
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     status: str = "queued"  # queued, running, completed, failed
     progress: int = 0
     current_stage: Optional[str] = None
@@ -75,7 +37,7 @@ class AnalysisJob(AnalysisJobBase):
 class TechStack(BaseModel):
     """Tech stack model"""
     id: UUID
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     technology: str
     category: Optional[str] = None  # language, framework, database, tool
     
@@ -86,7 +48,7 @@ class TechStack(BaseModel):
 class Issue(BaseModel):
     """Issue/warning model"""
     id: UUID
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     type: str  # security, quality, plagiarism
     severity: str  # high, medium, low
     file_path: Optional[str] = None
@@ -101,7 +63,7 @@ class Issue(BaseModel):
 class TeamMember(BaseModel):
     """Team member model"""
     id: UUID
-    project_id: UUID
+    team_id: UUID  # Changed from project_id
     name: str
     commits: int
     contribution_pct: Optional[float] = None
@@ -110,12 +72,7 @@ class TeamMember(BaseModel):
         from_attributes = True
 
 
-class ProjectWithDetails(Project):
-    """Project with related data"""
-    tech_stack: List[TechStack] = []
-    issues: List[Issue] = []
-    team_members: List[TeamMember] = []
-    job: Optional[AnalysisJob] = None
+# ProjectWithDetails removed - use TeamWithDetails instead
 
 
 # ==================== NEW MODELS FOR BATCH SYSTEM ====================
@@ -163,8 +120,9 @@ class TeamBase(BaseModel):
     """Base team model"""
     batch_id: UUID
     team_name: str
-    project_id: Optional[UUID] = None
+    repo_url: Optional[str] = None  # GitHub repository URL
     mentor_id: Optional[UUID] = None
+    description: Optional[str] = None
 
 
 class TeamCreate(TeamBase):
@@ -175,22 +133,56 @@ class TeamCreate(TeamBase):
 class TeamUpdate(BaseModel):
     """Model for updating a team"""
     team_name: Optional[str] = None
-    project_id: Optional[UUID] = None
+    repo_url: Optional[str] = None
     mentor_id: Optional[UUID] = None
     health_status: Optional[str] = None
     risk_flags: Optional[List[str]] = None
+    status: Optional[str] = None  # Analysis status
 
 
 class Team(TeamBase):
-    """Full team model"""
+    """Full team model with analysis fields"""
     id: UUID
     student_count: int = 0
+    
+    # Analysis Status
+    status: str = "pending"  # pending, analyzing, completed, failed
+    
+    # Analysis Scores (0-100)
+    total_score: Optional[float] = None
+    quality_score: Optional[float] = None
+    security_score: Optional[float] = None
+    originality_score: Optional[float] = None
+    architecture_score: Optional[float] = None
+    documentation_score: Optional[float] = None
+    effort_score: Optional[float] = None
+    implementation_score: Optional[float] = None
+    engineering_score: Optional[float] = None
+    organization_score: Optional[float] = None
+    
+    # Analysis Metadata
+    total_commits: Optional[int] = None
+    verdict: Optional[str] = None
+    ai_pros: Optional[List[str]] = None
+    ai_cons: Optional[List[str]] = None
+    report_json: Optional[Dict[str, Any]] = None
+    report_path: Optional[str] = None
+    viz_path: Optional[str] = None
+    
+    # Health Tracking
     health_status: str = "on_track"  # on_track, at_risk, critical
     risk_flags: Optional[List[str]] = []
     last_activity: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = {}
+    last_health_check: Optional[datetime] = None
+    
+    # Timestamps
     created_at: datetime
     updated_at: datetime
+    analyzed_at: Optional[datetime] = None
+    last_analyzed_at: Optional[datetime] = None
+    
+    # Flexible Metadata
+    metadata: Optional[Dict[str, Any]] = {}
     
     class Config:
         from_attributes = True
@@ -276,10 +268,12 @@ class UserProfile(BaseModel):
 # ==================== EXTENDED MODELS WITH RELATIONS ====================
 
 class TeamWithDetails(Team):
-    """Team with students and project"""
+    """Team with students and analysis data"""
     students: List[Student] = []
-    project: Optional[Project] = None
     mentor: Optional[UserProfile] = None
+    tech_stack: List[TechStack] = []
+    issues: List[Issue] = []
+    team_members: List[TeamMember] = []
 
 
 class BatchWithTeams(Batch):

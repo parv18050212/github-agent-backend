@@ -20,7 +20,7 @@ from src.api.backend.schemas import (
     ErrorResponse,
     AnalysisJobListResponse
 )
-from src.api.backend.crud import ProjectCRUD, AnalysisJobCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
+from src.api.backend.crud import AnalysisJobCRUD, TechStackCRUD, IssueCRUD, TeamMemberCRUD
 from src.api.backend.utils.cache import cache, RedisCache
 
 # Re-analysis interval configuration (in days)
@@ -125,27 +125,40 @@ async def analyze_repo(
     will not be re-analyzed. Use force=true to override this behavior.
     """
     try:
-        # Check if repo already exists
-        existing = ProjectCRUD.get_project_by_url(request.repo_url)
-        if existing:
+        # Check if team already exists with this repo_url
+        from src.api.backend.database import get_supabase_admin_client
+        supabase = get_supabase_admin_client()
+        
+        existing_team = supabase.table("teams").select("*").eq("repo_url", request.repo_url).limit(1).execute()
+        
+        if existing_team.data:
+            team = existing_team.data[0]
             # Check if re-analysis should be allowed
-            allowed, reason = should_allow_reanalysis(existing, force=force)
+            allowed, reason = should_allow_reanalysis(team, force=force)
             if not allowed:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=reason
                 )
-            project_id = UUID(existing["id"])
+            team_id = UUID(team["id"])
         else:
-            # Create new project
-            project = ProjectCRUD.create_project(
-                repo_url=request.repo_url,
-                team_name=request.team_name
-            )
-            project_id = UUID(project["id"])
+            # Create new team record
+            team_data = {
+                "team_name": request.team_name or "Unknown Team",
+                "repo_url": request.repo_url,
+                "status": "pending",
+                "batch_id": "00000000-0000-0000-0000-000000000000"  # Default batch for standalone analysis
+            }
+            team_response = supabase.table("teams").insert(team_data).execute()
+            if not team_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create team record"
+                )
+            team_id = UUID(team_response.data[0]["id"])
         
         # Create analysis job
-        job = AnalysisJobCRUD.create_job(project_id)
+        job = AnalysisJobCRUD.create_job(team_id)
         job_id = UUID(job["id"])
         
         # Queue Celery task (or fallback to BackgroundTasks)
@@ -153,14 +166,12 @@ async def analyze_repo(
         if CELERY_ENABLED:
             try:
                 task = analyze_repository_task.delay(
-                    project_id=str(project_id),
+                    team_id=str(team_id),  # Updated to use team_id parameter
                     job_id=str(job_id),
                     repo_url=request.repo_url,
                     team_name=request.team_name
                 )
                 # Store Celery task ID
-                from src.api.backend.database import get_supabase_admin_client
-                supabase = get_supabase_admin_client()
                 supabase.table('analysis_jobs').update({
                     'metadata': {'celery_task_id': task.id}
                 }).eq('id', str(job_id)).execute()
@@ -175,7 +186,7 @@ async def analyze_repo(
                 from src.api.backend.background import run_analysis_job
                 import asyncio
                 asyncio.create_task(run_analysis_job(
-                    project_id=str(project_id),
+                    project_id=str(team_id),  # Keep parameter name for compatibility
                     job_id=str(job_id),
                     repo_url=request.repo_url,
                     team_name=request.team_name
@@ -188,7 +199,7 @@ async def analyze_repo(
         
         return AnalyzeRepoResponse(
             job_id=job_id,
-            project_id=project_id,
+            team_id=team_id,
             status="queued",
             message="Analysis queued successfully"
         )
@@ -232,7 +243,7 @@ async def get_analysis_status(job_id: UUID):
         
         result = AnalysisStatusResponse(
             job_id=UUID(job["id"]),
-            project_id=UUID(job["project_id"]),
+            team_id=UUID(job["team_id"]),  # Changed from project_id
             status=job["status"],
             progress=job["progress"],
             current_stage=job.get("current_stage"),
@@ -317,7 +328,7 @@ async def list_analysis_jobs(
             
             jobs.append(AnalysisJobListItem(
                 job_id=job_id,
-                project_id=UUID(job["project_id"]),
+                team_id=UUID(job["team_id"]),  # Changed from project_id
                 repo_url=job.get("repo_url", "Unknown"),
                 team_name=job.get("team_name"),
                 status=job["status"],
@@ -399,43 +410,47 @@ async def get_analysis_result(job_id: UUID):
                 detail=f"Analysis not completed yet. Current status: {job['status']}"
             )
         
-        # Get project
-        project_id = UUID(job["project_id"])
-        project = ProjectCRUD.get_project(project_id)
+        # Get team
+        team_id = UUID(job["team_id"])
+        from src.api.backend.database import get_supabase_admin_client
+        supabase = get_supabase_admin_client()
+        team_response = supabase.table("teams").select("*").eq("id", str(team_id)).limit(1).execute()
         
-        if not project:
+        if not team_response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found"
+                detail="Team not found"
             )
         
+        team = team_response.data[0]
+        
         # Get related data
-        tech_stack = TechStackCRUD.get_tech_stack(project_id)
-        issues = IssueCRUD.get_issues(project_id)
-        team_members = TeamMemberCRUD.get_team_members(project_id)
+        tech_stack = TechStackCRUD.get_tech_stack(team_id)
+        issues = IssueCRUD.get_issues(team_id)
+        team_members = TeamMemberCRUD.get_team_members(team_id)
         
         # Build response
         result = AnalysisResultResponse(
-            project_id=project_id,
-            repo_url=project["repo_url"],
-            team_name=project.get("team_name"),
-            status=project["status"],
-            analyzed_at=project.get("analyzed_at"),
+            team_id=team_id,
+            repo_url=team["repo_url"],
+            team_name=team.get("team_name"),
+            status=team["status"],
+            analyzed_at=team.get("analyzed_at"),
             scores=ScoreBreakdown(
-                total_score=project.get("total_score"),
-                originality_score=project.get("originality_score"),
-                quality_score=project.get("quality_score"),
-                security_score=project.get("security_score"),
-                effort_score=project.get("effort_score"),
-                implementation_score=project.get("implementation_score"),
-                engineering_score=project.get("engineering_score"),
-                organization_score=project.get("organization_score"),
-                documentation_score=project.get("documentation_score")
+                total_score=team.get("total_score"),
+                originality_score=team.get("originality_score"),
+                quality_score=team.get("quality_score"),
+                security_score=team.get("security_score"),
+                effort_score=team.get("effort_score"),
+                implementation_score=team.get("implementation_score"),
+                engineering_score=team.get("engineering_score"),
+                organization_score=team.get("organization_score"),
+                documentation_score=team.get("documentation_score")
             ),
-            total_commits=project.get("total_commits"),
-            verdict=project.get("verdict"),
-            ai_pros=project.get("ai_pros"),
-            ai_cons=project.get("ai_cons"),
+            total_commits=team.get("total_commits"),
+            verdict=team.get("verdict"),
+            ai_pros=team.get("ai_pros"),
+            ai_cons=team.get("ai_cons"),
             tech_stack=[
                 TechStackItem(
                     technology=t["technology"],
@@ -459,8 +474,8 @@ async def get_analysis_result(job_id: UUID):
                     contribution_pct=tm.get("contribution_pct")
                 ) for tm in team_members
             ],
-            viz_url=project.get("viz_url"),
-            report_json=project.get("report_json")
+            viz_url=team.get("viz_path"),
+            report_json=team.get("report_json")
         )
         
         # Cache the result for 5 minutes (completed results don't change)

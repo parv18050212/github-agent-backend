@@ -9,216 +9,11 @@ from src.api.backend.utils.role_manager import RoleManager
 from postgrest.exceptions import APIError
 
 
-class ProjectCRUD:
-    """CRUD operations for projects table"""
-    
-    @staticmethod
-    def create_project(repo_url: str, team_name: Optional[str] = None) -> Dict[str, Any]:
-        """Create a new project record"""
-        supabase = get_supabase_client()
-        
-        try:
-            # Generate UUID explicitly since DB doesn't have default
-            project_id = str(uuid4())
-            data = {
-                "id": project_id,
-                "repo_url": repo_url,
-                "team_name": team_name,
-                "status": "pending",
-                "created_at": datetime.now().isoformat()
-            }
-            
-            result = supabase.table("projects").insert(data).execute()
-            return result.data[0] if result.data else None
-        except Exception as e:
-            print(f"Error creating project: {e}")
-            raise
-    
-    @staticmethod
-    def get_project(project_id: UUID) -> Optional[Dict[str, Any]]:
-        """Get project by ID"""
-        supabase = get_supabase_client()
-        
-        result = supabase.table("projects").select("*").eq("id", str(project_id)).execute()
-        return result.data[0] if result.data else None
-    
-    @staticmethod
-    def get_project_by_url(repo_url: str) -> Optional[Dict[str, Any]]:
-        """Get project by repository URL"""
-        supabase = get_supabase_client()
-        
-        result = supabase.table("projects").select("*").eq("repo_url", repo_url).execute()
-        return result.data[0] if result.data else None
-    
-    @staticmethod
-    def update_project(project_id: UUID, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update project fields"""
-        supabase = get_supabase_client()
-        
-        try:
-            result = supabase.table("projects").update(data).eq("id", str(project_id)).execute()
-            return result.data[0] if result.data else None
-        except Exception as e:
-            print(f"Error updating project {project_id}: {e}")
-            raise
-    
-    @staticmethod
-    def update_project_status(project_id: UUID, status: str) -> Dict[str, Any]:
-        """Update project status"""
-        return ProjectCRUD.update_project(project_id, {"status": status})
-    
-    @staticmethod
-    def update_project_scores(project_id: UUID, scores: Dict[str, float]) -> Dict[str, Any]:
-        """Update project scores"""
-        data = {
-            **scores,
-            "analyzed_at": datetime.now().isoformat(),
-            "last_analyzed_at": datetime.now().isoformat()
-        }
-        return ProjectCRUD.update_project(project_id, data)
-    
-    @staticmethod
-    def list_projects(
-        status: Optional[str] = None,
-        min_score: Optional[float] = None,
-        max_score: Optional[float] = None,
-        team_name: Optional[str] = None,
-        page: int = 1,
-        page_size: int = 20
-    ) -> tuple[List[Dict[str, Any]], int]:
-        """List projects with filters and pagination"""
-        supabase = get_supabase_admin_client()
-        
-        # Build query
-        query = supabase.table("projects").select("*", count="exact")
-        
-        if status:
-            query = query.eq("status", status)
-        if min_score is not None:
-            query = query.gte("total_score", min_score)
-        if max_score is not None:
-            query = query.lte("total_score", max_score)
-        if team_name:
-            query = query.ilike("team_name", f"%{team_name}%")
-        
-        # Pagination
-        start = (page - 1) * page_size
-        end = start + page_size - 1
-        query = query.range(start, end).order("created_at", desc=True)
-        
-        result = query.execute()
-        total = result.count if hasattr(result, 'count') else len(result.data)
-        
-        return result.data, total
-    
-    @staticmethod
-    def delete_project(project_id: UUID) -> bool:
-        """Delete project (cascade deletes related records)"""
-        supabase = get_supabase_client()
-        
-        result = supabase.table("projects").delete().eq("id", str(project_id)).execute()
-        return len(result.data) > 0
-    
-    @staticmethod
-    def get_leaderboard(
-        sort_by: str = "total_score",
-        order: str = "desc",
-        page: int = 1,
-        page_size: int = 20,
-        status: str = "completed",
-        batch_id: Optional[str] = None,
-        mentor_id: Optional[str] = None
-    ) -> tuple[List[Dict[str, Any]], int]:
-        """Get ranked projects leaderboard with optional batch and mentor filtering"""
-        from src.api.backend.utils.cache import cache, RedisCache
-        
-        supabase = get_supabase_client()
-        
-        # Build count cache key
-        count_cache_key = f"hackeval:leaderboard:count:{batch_id or 'all'}:{status}:{mentor_id or 'all'}"
-        total = cache.get(count_cache_key)
-        
-        # Query without count for data (faster)
-        query = supabase.table("projects").select("*")
-        
-        # Filter by batch or mentor if provided
-        # Use teams.project_id to find projects (teams link TO projects, not vice versa)
-        if batch_id or mentor_id:
-            project_ids = set()
-            
-            # Base teams query
-            teams_query = supabase.table("teams").select("project_id")
-            if batch_id:
-                teams_query = teams_query.eq("batch_id", batch_id)
-            
-            if mentor_id:
-                # Use centralized logic for mentor team resolution
-                mentor_team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
-                # Need to map these team_ids to project_ids
-                if mentor_team_ids:
-                    t_res = supabase.table("teams").select("project_id").in_("id", mentor_team_ids).execute()
-                    if t_res.data:
-                        project_ids.update([t["project_id"] for t in t_res.data if t.get("project_id")])
-            else:
-                # Only batch_id filtering
-                r = teams_query.execute()
-                if r.data:
-                    project_ids.update([t["project_id"] for t in r.data if t.get("project_id")])
-            
-            final_project_ids = list(project_ids)
-            
-            if not final_project_ids:
-                return [], 0 # No matching teams
-            
-            query = query.in_("id", final_project_ids)
-        
-        # Filter by status
-        query = query.eq("status", status)
-        
-        # Only include projects with scores
-        query = query.not_.is_("total_score", "null")
-        
-        # Pagination
-        start = (page - 1) * page_size
-        end = start + page_size - 1
-        
-        # Sorting
-        desc = (order.lower() == "desc")
-        query = query.range(start, end).order(sort_by, desc=desc)
-        
-        result = query.execute()
-        
-        # If count not cached, run separate count query and cache it
-        if total is None:
-            count_query = supabase.table("projects").select("id", count="exact")
-            
-            # Apply same filters for count
-            if batch_id or mentor_id:
-                if final_project_ids:
-                    count_query = count_query.in_("id", final_project_ids)
-            count_query = count_query.eq("status", status)
-            count_query = count_query.not_.is_("total_score", "null")
-            
-            count_result = count_query.execute()
-            total = count_result.count if hasattr(count_result, 'count') else 0
-            
-            # Cache count for 30 seconds (balances freshness with performance)
-            cache.set(count_cache_key, total, RedisCache.TTL_SHORT)
-        
-        # Add rank
-        ranked_data = []
-        for idx, item in enumerate(result.data):
-            item['rank'] = start + idx + 1
-            ranked_data.append(item)
-        
-        return ranked_data, total
-
-
 class AnalysisJobCRUD:
     """CRUD operations for analysis_jobs table"""
     
     @staticmethod
-    def create_job(project_id: UUID) -> Dict[str, Any]:
+    def create_job(team_id: UUID) -> Dict[str, Any]:
         """Create a new analysis job"""
         supabase = get_supabase_client()
         
@@ -226,7 +21,7 @@ class AnalysisJobCRUD:
         job_id = str(uuid4())
         data = {
             "id": job_id,
-            "project_id": str(project_id),
+            "team_id": str(team_id),  # Changed from project_id
             "status": "queued",
             "progress": 0,
             "started_at": datetime.now().isoformat()
@@ -244,13 +39,13 @@ class AnalysisJobCRUD:
         return result.data[0] if result.data else None
     
     @staticmethod
-    def get_job_by_project(project_id: UUID) -> Optional[Dict[str, Any]]:
-        """Get latest job for a project"""
+    def get_job_by_team(team_id: UUID) -> Optional[Dict[str, Any]]:
+        """Get latest job for a team"""
         supabase = get_supabase_client()
         
         result = (supabase.table("analysis_jobs")
                  .select("*")
-                 .eq("project_id", str(project_id))
+                 .eq("team_id", str(team_id))  # Changed from project_id
                  .order("started_at", desc=True)
                  .limit(1)
                  .execute())
@@ -440,12 +235,12 @@ class TechStackCRUD:
     """CRUD operations for tech_stack table"""
     
     @staticmethod
-    def add_technologies(project_id: UUID, technologies: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """Add multiple technologies for a project (replaces existing tech stack)"""
+    def add_technologies(team_id: UUID, technologies: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """Add multiple technologies for a team (replaces existing tech stack)"""
         supabase = get_supabase_client()
         
         # Delete existing tech stack first to prevent duplicates on re-analysis
-        supabase.table("tech_stack").delete().eq("project_id", str(project_id)).execute()
+        supabase.table("tech_stack").delete().eq("team_id", str(team_id)).execute()
         
         if not technologies:
             return []
@@ -465,7 +260,7 @@ class TechStackCRUD:
         data = [
             {
                 "id": str(uuid4()),
-                "project_id": str(project_id),
+                "team_id": str(team_id),  # Changed from project_id
                 "technology": tech.get("technology"),
                 "category": tech.get("category")
             }
@@ -476,18 +271,18 @@ class TechStackCRUD:
         return result.data
     
     @staticmethod
-    def get_tech_stack(project_id: UUID) -> List[Dict[str, Any]]:
-        """Get all technologies for a project"""
+    def get_tech_stack(team_id: UUID) -> List[Dict[str, Any]]:
+        """Get all technologies for a team"""
         supabase = get_supabase_client()
         
-        result = supabase.table("tech_stack").select("*").eq("project_id", str(project_id)).execute()
+        result = supabase.table("tech_stack").select("*").eq("team_id", str(team_id)).execute()
         return result.data
     
     @staticmethod
-    def delete_by_project(project_id: UUID) -> bool:
-        """Delete all technologies for a project"""
+    def delete_by_team(team_id: UUID) -> bool:
+        """Delete all technologies for a team"""
         supabase = get_supabase_client()
-        result = supabase.table("tech_stack").delete().eq("project_id", str(project_id)).execute()
+        result = supabase.table("tech_stack").delete().eq("team_id", str(team_id)).execute()
         return True
 
 
@@ -495,12 +290,12 @@ class IssueCRUD:
     """CRUD operations for issues table"""
     
     @staticmethod
-    def add_issues(project_id: UUID, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Add multiple issues for a project (replaces existing issues)"""
+    def add_issues(team_id: UUID, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Add multiple issues for a team (replaces existing issues)"""
         supabase = get_supabase_client()
         
         # Delete existing issues first to prevent duplicates on re-analysis
-        supabase.table("issues").delete().eq("project_id", str(project_id)).execute()
+        supabase.table("issues").delete().eq("team_id", str(team_id)).execute()
         
         if not issues:
             return []
@@ -508,7 +303,7 @@ class IssueCRUD:
         data = [
             {
                 "id": str(uuid4()),
-                "project_id": str(project_id),
+                "team_id": str(team_id),  # Changed from project_id
                 "type": issue.get("type"),
                 "severity": issue.get("severity"),
                 "file_path": issue.get("file_path"),
@@ -523,18 +318,18 @@ class IssueCRUD:
         return result.data
     
     @staticmethod
-    def get_issues(project_id: UUID) -> List[Dict[str, Any]]:
-        """Get all issues for a project"""
+    def get_issues(team_id: UUID) -> List[Dict[str, Any]]:
+        """Get all issues for a team"""
         supabase = get_supabase_client()
         
-        result = supabase.table("issues").select("*").eq("project_id", str(project_id)).execute()
+        result = supabase.table("issues").select("*").eq("team_id", str(team_id)).execute()
         return result.data
     
     @staticmethod
-    def delete_by_project(project_id: UUID) -> bool:
-        """Delete all issues for a project"""
+    def delete_by_team(team_id: UUID) -> bool:
+        """Delete all issues for a team"""
         supabase = get_supabase_client()
-        result = supabase.table("issues").delete().eq("project_id", str(project_id)).execute()
+        result = supabase.table("issues").delete().eq("team_id", str(team_id)).execute()
         return True
 
 
@@ -542,12 +337,12 @@ class TeamMemberCRUD:
     """CRUD operations for team_members table"""
     
     @staticmethod
-    def add_members(project_id: UUID, members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Add multiple team members for a project (replaces existing members)"""
+    def add_members(team_id: UUID, members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Add multiple team members for a team (replaces existing members)"""
         supabase = get_supabase_client()
         
         # Delete existing members first to prevent duplicates
-        supabase.table("team_members").delete().eq("project_id", str(project_id)).execute()
+        supabase.table("team_members").delete().eq("team_id", str(team_id)).execute()
         
         # Deduplicate members by name (prefer entry with more commits)
         members_by_name = {}
@@ -565,7 +360,7 @@ class TeamMemberCRUD:
         data = [
             {
                 "id": str(uuid4()),
-                "project_id": str(project_id),
+                "team_id": str(team_id),  # Changed from project_id
                 "name": member.get("name"),
                 "commits": member.get("commits"),
                 "contribution_pct": member.get("contribution_pct")
@@ -577,18 +372,18 @@ class TeamMemberCRUD:
         return result.data
     
     @staticmethod
-    def get_team_members(project_id: UUID) -> List[Dict[str, Any]]:
-        """Get all team members for a project"""
+    def get_team_members(team_id: UUID) -> List[Dict[str, Any]]:
+        """Get all team members for a team"""
         supabase = get_supabase_client()
         
-        result = supabase.table("team_members").select("*").eq("project_id", str(project_id)).execute()
+        result = supabase.table("team_members").select("*").eq("team_id", str(team_id)).execute()
         return result.data
     
     @staticmethod
-    def delete_by_project(project_id: UUID) -> bool:
-        """Delete all team members for a project"""
+    def delete_by_team(team_id: UUID) -> bool:
+        """Delete all team members for a team"""
         supabase = get_supabase_client()
-        result = supabase.table("team_members").delete().eq("project_id", str(project_id)).execute()
+        result = supabase.table("team_members").delete().eq("team_id", str(team_id)).execute()
         return True
 
 
@@ -894,6 +689,51 @@ class TeamCRUD:
         team_id_list = list(team_ids)
         cache.set(cache_key, team_id_list, RedisCache.TTL_SHORT)
         return team_id_list
+
+    @staticmethod
+    def get_team(team_id: UUID) -> Optional[Dict[str, Any]]:
+        """Get team by ID"""
+        supabase = get_supabase_client()
+        
+        result = supabase.table("teams").select("*").eq("id", str(team_id)).execute()
+        return result.data[0] if result.data else None
+
+    @staticmethod
+    def get_team_by_url(repo_url: str) -> Optional[Dict[str, Any]]:
+        """Get team by repository URL"""
+        supabase = get_supabase_client()
+        
+        result = supabase.table("teams").select("*").eq("repo_url", repo_url).execute()
+        return result.data[0] if result.data else None
+
+    @staticmethod
+    def update_team(team_id: UUID, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update team fields"""
+        supabase = get_supabase_client()
+        
+        try:
+            # Add updated_at timestamp
+            data["updated_at"] = datetime.now().isoformat()
+            result = supabase.table("teams").update(data).eq("id", str(team_id)).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error updating team {team_id}: {e}")
+            raise
+
+    @staticmethod
+    def update_team_status(team_id: UUID, status: str) -> Dict[str, Any]:
+        """Update team analysis status"""
+        return TeamCRUD.update_team(team_id, {"status": status})
+
+    @staticmethod
+    def update_team_scores(team_id: UUID, scores: Dict[str, float]) -> Dict[str, Any]:
+        """Update team analysis scores"""
+        data = {
+            **scores,
+            "analyzed_at": datetime.now().isoformat(),
+            "last_analyzed_at": datetime.now().isoformat()
+        }
+        return TeamCRUD.update_team(team_id, data)
 
 
 class ProjectCommentCRUD:

@@ -7,7 +7,7 @@ import time
 from uuid import UUID
 from typing import List, Dict
 from src.api.backend.services.analyzer_service import AnalyzerService
-from src.api.backend.crud import BatchCRUD, ProjectCRUD, AnalysisJobCRUD
+from src.api.backend.crud import BatchCRUD, AnalysisJobCRUD
 from src.api.backend.utils.logger import batch_logger
 
 def run_analysis_job(project_id: str, job_id: str, repo_url: str, team_name: str = None):

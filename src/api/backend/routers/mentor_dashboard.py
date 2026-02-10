@@ -70,9 +70,9 @@ async def get_mentor_dashboard(
             "recentActivity": []
         }
     
-    # Fetch teams with project data
+    # Fetch teams data directly (no more project joins)
     teams_response = supabase.table("teams").select(
-        "id, team_name, batch_id, health_status, projects!projects_teams_fk(total_score,last_analyzed_at,analyzed_at,created_at)"
+        "id, team_name, batch_id, health_status, total_score"
     ).in_("id", team_ids).execute()
     
     teams = teams_response.data or []
@@ -92,15 +92,10 @@ async def get_mentor_dashboard(
         elif health == "critical":
             critical += 1
         
-        # Get project score if available
-        project = team.get("projects")
-        if project:
-            if isinstance(project, list):
-                project = project[0] if project else None
-            if project:
-                score = project.get("total_score") or 0
-                if score > 0:
-                    scores.append(score)
+        # Get score directly from team
+        score = team.get("total_score") or 0
+        if score > 0:
+            scores.append(score)
     
     avg_score = sum(scores) / len(scores) if scores else 0
     
@@ -145,15 +140,15 @@ async def get_mentor_leaderboard(
             page_size=page_size
         )
     
-    # Get project IDs for these teams
-    teams_query = supabase.table("teams").select("project_id").in_("id", team_ids)
+    # Get team IDs for these teams
+    teams_query = supabase.table("teams").select("id").in_("id", team_ids)
     if batch_id:
         teams_query = teams_query.eq("batch_id", batch_id)
     
     teams_result = teams_query.execute()
-    project_ids = [t["project_id"] for t in teams_result.data if t.get("project_id")]
+    filtered_team_ids = [t["id"] for t in teams_result.data]
     
-    if not project_ids:
+    if not filtered_team_ids:
         return LeaderboardResponse(
             leaderboard=[],
             total=0,
@@ -161,8 +156,8 @@ async def get_mentor_leaderboard(
             page_size=page_size
         )
     
-    # Query projects
-    query = supabase.table("projects").select("*", count="exact").in_("id", project_ids)
+    # Query teams directly (no more projects table)
+    query = supabase.table("teams").select("*", count="exact").in_("id", filtered_team_ids)
     query = query.eq("status", "completed")
     query = query.not_.is_("total_score", "null")
     
@@ -179,19 +174,19 @@ async def get_mentor_leaderboard(
     
     # Build response
     leaderboard_items = []
-    for idx, p in enumerate(result.data):
+    for idx, team in enumerate(result.data):
         leaderboard_items.append(LeaderboardItem(
             rank=start + idx + 1,
-            id=UUID(p["id"]),
-            repo_url=p["repo_url"],
-            team_name=p.get("team_name"),
-            total_score=p.get("total_score", 0),
-            originality_score=p.get("originality_score"),
-            quality_score=p.get("quality_score"),
-            security_score=p.get("security_score"),
-            implementation_score=p.get("implementation_score"),
-            verdict=p.get("verdict"),
-            analyzed_at=p.get("analyzed_at")
+            id=UUID(team["id"]),
+            repo_url=team["repo_url"],
+            team_name=team.get("team_name"),
+            total_score=team.get("total_score", 0),
+            originality_score=team.get("originality_score"),
+            quality_score=team.get("quality_score"),
+            security_score=team.get("security_score"),
+            implementation_score=team.get("implementation_score"),
+            verdict=team.get("verdict"),
+            analyzed_at=team.get("analyzed_at")
         ))
     
     return LeaderboardResponse(
@@ -236,9 +231,9 @@ async def get_mentor_reports(
             }
         }
     
-    # Fetch teams with projects
+    # Fetch teams directly (no more project joins)
     query = supabase.table("teams").select(
-        "id, team_name, batch_id, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,last_analyzed_at,analyzed_at,created_at)"
+        "id, team_name, batch_id, health_status, total_score, quality_score, security_score, last_analyzed_at, analyzed_at, created_at, repo_url, student_count"
     ).in_("id", team_ids)
     if batch_id:
         query = query.eq("batch_id", batch_id)
@@ -254,13 +249,9 @@ async def get_mentor_reports(
     critical = 0
     
     for team in teams:
-        project = team.get("projects")
-        if isinstance(project, list):
-            project = project[0] if project else None
-        
-        total_score = (project or {}).get("total_score") or 0
-        quality_score = (project or {}).get("quality_score") or 0
-        security_score = (project or {}).get("security_score") or 0
+        total_score = team.get("total_score") or 0
+        quality_score = team.get("quality_score") or 0
+        security_score = team.get("security_score") or 0
         if total_score > 0:
             scores.append(total_score)
         
@@ -280,9 +271,9 @@ async def get_mentor_reports(
             "qualityScore": quality_score,
             "securityScore": security_score,
             "healthStatus": health,
-            "lastAnalyzed": (project or {}).get("last_analyzed_at")
-            or (project or {}).get("analyzed_at")
-            or (project or {}).get("created_at")
+            "lastAnalyzed": team.get("last_analyzed_at") or team.get("analyzed_at") or team.get("created_at"),
+            "repoUrl": team.get("repo_url"),
+            "studentCount": team.get("student_count", 0)
         })
     
     avg_score = sum(scores) / len(scores) if scores else 0
@@ -332,25 +323,23 @@ async def get_mentor_team_report(
             detail="You are not assigned to this team"
         )
     
-    # Get team with project
+    # Get team directly (no more project joins)
     team_response = supabase.table("teams").select(
-        "id, team_name, batch_id, repo_url, health_status, projects!projects_teams_fk(total_score,quality_score,security_score,originality_score,engineering_score,organization_score,documentation_score,last_analyzed_at,analyzed_at,created_at,verdict,ai_pros,ai_cons)"
+        "id, team_name, batch_id, repo_url, health_status, total_score, quality_score, security_score, originality_score, engineering_score, organization_score, documentation_score, last_analyzed_at, analyzed_at, created_at, verdict, ai_pros, ai_cons"
     ).eq("id", team_id).execute()
     
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
     
     team = team_response.data[0]
-    project = team.get("projects")
-    if isinstance(project, list):
-        project = project[0] if project else None
     
-    total_score = (project or {}).get("total_score") or 0
-    quality_score = (project or {}).get("quality_score") or 0
-    security_score = (project or {}).get("security_score") or 0
-    originality_score = (project or {}).get("originality_score") or 0
-    architecture_score = (project or {}).get("engineering_score") or (project or {}).get("organization_score") or 0
-    documentation_score = (project or {}).get("documentation_score") or 0
+    # Get scores directly from team
+    total_score = team.get("total_score") or 0
+    quality_score = team.get("quality_score") or 0
+    security_score = team.get("security_score") or 0
+    originality_score = team.get("originality_score") or 0
+    architecture_score = team.get("engineering_score") or team.get("organization_score") or 0
+    documentation_score = team.get("documentation_score") or 0
     
     # Get students
     students_response = supabase.table("students").select(
@@ -373,9 +362,9 @@ async def get_mentor_team_report(
             "documentationScore": documentation_score
         },
         "aiSummary": {
-            "verdict": (project or {}).get("verdict"),
-            "pros": (project or {}).get("ai_pros"),
-            "cons": (project or {}).get("ai_cons")
+            "verdict": team.get("verdict"),
+            "pros": team.get("ai_pros"),
+            "cons": team.get("ai_cons")
         },
         "students": [
             {
@@ -388,9 +377,7 @@ async def get_mentor_team_report(
             for s in students
         ],
         "healthStatus": team.get("health_status", "on_track"),
-        "lastAnalyzedAt": (project or {}).get("last_analyzed_at")
-        or (project or {}).get("analyzed_at")
-        or (project or {}).get("created_at")
+        "lastAnalyzedAt": team.get("last_analyzed_at") or team.get("analyzed_at") or team.get("created_at")
     }
 
     cache.set(cache_key, response, RedisCache.TTL_SHORT)

@@ -320,3 +320,119 @@ def mock_data_mapper(monkeypatch):
     monkeypatch.setattr(data_mapper, "DataMapper", mock_mapper)
     
     return mock_mapper
+
+
+# ==================== Migration Test Fixtures ====================
+
+@pytest.fixture
+def sample_batch():
+    """Sample batch data for testing"""
+    return {
+        "id": str(uuid4()),
+        "name": "3rd Year AIML 2025",
+        "semester": "6th Sem",
+        "year": "2025",
+        "created_at": datetime.now().isoformat()
+    }
+
+
+@pytest.fixture
+def sample_team_with_analysis(sample_batch):
+    """Sample team with complete analysis data"""
+    return {
+        "id": str(uuid4()),
+        "batch_id": sample_batch["id"],
+        "team_name": "Test Team with Analysis",
+        "repo_url": "https://github.com/test/analyzed-repo",
+        "status": "completed",
+        "total_score": 85.5,
+        "quality_score": 90.0,
+        "security_score": 80.0,
+        "originality_score": 85.0,
+        "documentation_score": 88.0,
+        "architecture_score": 82.0,
+        "last_analyzed_at": datetime.now().isoformat(),
+        "analyzed_at": datetime.now().isoformat(),
+        "created_at": datetime.now().isoformat(),
+        "report_json": {
+            "commit_details": {
+                "all_commits": [
+                    {
+                        "hash": "abc123",
+                        "author": "John Doe",
+                        "email": "john@example.com",
+                        "message": "Initial commit",
+                        "date": datetime.now().isoformat(),
+                        "additions": 100,
+                        "deletions": 0,
+                        "files_changed": ["main.py", "README.md"]
+                    }
+                ],
+                "total_commits": 1
+            },
+            "structure": {
+                "file_count": 10,
+                "loc": 1000,
+                "architecture": "MVC"
+            },
+            "languages": {
+                "Python": 80.0,
+                "JavaScript": 20.0
+            },
+            "stack": ["Python", "FastAPI", "PostgreSQL"]
+        },
+        "team_members": [
+            {
+                "id": str(uuid4()),
+                "name": "John Doe",
+                "commits": 25,
+                "contribution_pct": 55.6
+            },
+            {
+                "id": str(uuid4()),
+                "name": "Jane Smith",
+                "commits": 20,
+                "contribution_pct": 44.4
+            }
+        ]
+    }
+
+
+@pytest.fixture
+async def test_client():
+    """HTTP test client for integration tests"""
+    from httpx import AsyncClient
+    from src.api.backend.main import app
+    
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        yield client
+
+
+@pytest.fixture
+def auth_headers():
+    """Authentication headers for test requests"""
+    # In real tests, this would use a valid test token
+    return {
+        "Authorization": "Bearer test-token",
+        "Content-Type": "application/json"
+    }
+
+
+@pytest.fixture
+def admin_user():
+    """Sample admin user"""
+    return {
+        "user_id": str(uuid4()),
+        "email": "admin@test.com",
+        "role": "admin"
+    }
+
+
+@pytest.fixture
+def mentor_user():
+    """Sample mentor user"""
+    return {
+        "user_id": str(uuid4()),
+        "email": "mentor@test.com",
+        "role": "mentor"
+    }

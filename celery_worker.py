@@ -21,31 +21,30 @@ import subprocess
 logger = get_task_logger(__name__)
 
 
-def create_snapshot_from_project(team_id: str, project_id: str, run_number: int, batch_run_id: str):
+def create_snapshot_from_team(team_id: str, run_number: int, batch_run_id: str):
     """
-    Create analysis snapshot from project for historical tracking
+    Create analysis snapshot from team for historical tracking
     Called after each successful analysis to preserve state for 7-day comparisons
     
     Args:
         team_id: UUID of team
-        project_id: UUID of project that was analyzed
         run_number: Analysis run number (1, 2, 3, etc.)
         batch_run_id: UUID of batch_analysis_run
     """
     try:
         supabase = get_supabase_admin_client()
         
-        # Get current project state
-        project = supabase.table('projects').select(
-            'report_json, github_url, team_id, batch_id'
-        ).eq('id', project_id).execute()
+        # Get current team state (teams table now has all analysis data)
+        team = supabase.table('teams').select(
+            'report_json, repo_url, batch_id'
+        ).eq('id', team_id).execute()
         
-        if not project.data:
-            logger.warning(f"Project {project_id} not found for snapshot")
+        if not team.data:
+            logger.warning(f"Team {team_id} not found for snapshot")
             return
         
-        project_data = project.data[0]
-        report_json = project_data.get('report_json')
+        team_data = team.data[0]
+        report_json = team_data.get('report_json')
         
         # Parse report if string
         if isinstance(report_json, str):
@@ -71,7 +70,7 @@ def create_snapshot_from_project(team_id: str, project_id: str, run_number: int,
             'batch_run_id': batch_run_id,
             'run_number': run_number,
             'analysis_date': datetime.utcnow().isoformat(),
-            'github_url': project_data.get('github_url'),
+            'github_url': team_data.get('repo_url'),  # Changed from github_url to repo_url
             'quality_score': scores['quality_score'],
             'security_score': scores['security_score'],
             'architecture_score': scores['architecture_score'],
@@ -79,8 +78,7 @@ def create_snapshot_from_project(team_id: str, project_id: str, run_number: int,
             'originality_score': scores['originality_score'],
             'total_score': scores['total_score'],
             'metadata': {
-                'project_id': project_id,
-                'batch_id': project_data.get('batch_id'),
+                'batch_id': team_data.get('batch_id'),
                 'report_snapshot': report_json,  # Full report for detailed comparisons
                 'created_by': 'celery_worker',
                 'snapshot_type': 'automatic'
@@ -124,7 +122,7 @@ class CallbackTask(Task):
 )
 def analyze_repository_task(
     self,
-    project_id: str,
+    team_id: str,  # Changed from project_id to team_id
     job_id: str,
     repo_url: str,
     team_name: str = None
@@ -133,7 +131,7 @@ def analyze_repository_task(
     Main repository analysis task
     
     Args:
-        project_id: Project UUID as string
+        team_id: Team UUID as string (parameter name kept as team_id for clarity)
         job_id: Job UUID as string
         repo_url: GitHub repository URL
         team_name: Optional team name
@@ -143,10 +141,10 @@ def analyze_repository_task(
     """
     try:
         logger.info(f"Starting analysis for {team_name or repo_url}")
-        logger.info(f"Job ID: {job_id}, Project ID: {project_id}")
+        logger.info(f"Job ID: {job_id}, Team ID: {team_id}")
         
         # Convert string UUIDs to UUID objects
-        project_uuid = UUID(project_id)
+        team_uuid = UUID(team_id)
         job_uuid = UUID(job_id)
         
         # Update job with Celery task ID
@@ -159,9 +157,9 @@ def analyze_repository_task(
             }
         }).eq('id', job_id).execute()
         
-        # Run analysis (existing logic)
+        # Run analysis (existing logic) - now uses team_id
         AnalyzerService.analyze_repository(
-            project_id=project_uuid,
+            team_id=team_uuid,  # Changed from project_id to team_id
             job_id=job_uuid,
             repo_url=repo_url,
             team_name=team_name
@@ -169,26 +167,19 @@ def analyze_repository_task(
         
         # CREATE SNAPSHOT after successful analysis (for 7-day tracking)
         try:
-            # Get project and team info
-            project = supabase.table('projects').select('team_id, batch_id').eq('id', project_id).execute()
-            if project.data:
-                team_id = project.data[0].get('team_id')
-                batch_id = project.data[0].get('batch_id')
-                
-                # Get metadata for run tracking
-                job_metadata = supabase.table('analysis_jobs').select('run_number, batch_id').eq('id', job_id).execute()
-                run_number = job_metadata.data[0].get('run_number') if job_metadata.data else None
-                batch_run_id = job_metadata.data[0].get('metadata', {}).get('batch_run_id') if job_metadata.data else None
-                
-                # Create snapshot if we have run tracking info
-                if team_id and run_number and batch_run_id:
-                    create_snapshot_from_project(
-                        team_id=team_id,
-                        project_id=project_id,
-                        run_number=run_number,
-                        batch_run_id=batch_run_id
-                    )
-                    logger.info(f"📸 Snapshot created for team {team_id}, run {run_number}")
+            # Get job metadata for run tracking
+            job_metadata = supabase.table('analysis_jobs').select('run_number, batch_id, metadata').eq('id', job_id).execute()
+            run_number = job_metadata.data[0].get('run_number') if job_metadata.data else None
+            batch_run_id = job_metadata.data[0].get('metadata', {}).get('batch_run_id') if job_metadata.data else None
+            
+            # Create snapshot if we have run tracking info
+            if run_number and batch_run_id:
+                create_snapshot_from_team(
+                    team_id=team_id,
+                    run_number=run_number,
+                    batch_run_id=batch_run_id
+                )
+                logger.info(f"📸 Snapshot created for team {team_id}, run {run_number}")
         except Exception as e:
             # Don't fail the job if snapshot creation fails
             logger.warning(f"⚠️ Failed to create snapshot: {e}")
@@ -260,7 +251,7 @@ def process_batch_sequential(self, batch_id: str, repos: List[Dict[str, str]]):
     
     Args:
         batch_id: Batch UUID as string
-        repos: List of dicts with keys: project_id, job_id, repo_url, team_name
+        repos: List of dicts with keys: team_id, job_id, repo_url, team_name
     
     Returns:
         dict: Batch processing summary
@@ -282,7 +273,7 @@ def process_batch_sequential(self, batch_id: str, repos: List[Dict[str, str]]):
             current_index = i + 1
             team_name = repo.get("team_name", f"Repo {current_index}")
             repo_url = repo.get("repo_url", "")
-            project_id = repo.get("project_id")
+            team_id = repo.get("team_id")  # Changed from project_id
             job_id = repo.get("job_id")
             
             logger.info(f"[{current_index}/{len(repos)}] 📦 {team_name} | {repo_url}")
@@ -290,7 +281,7 @@ def process_batch_sequential(self, batch_id: str, repos: List[Dict[str, str]]):
             # Queue individual analysis task (non-blocking)
             try:
                 task_result = analyze_repository_task.delay(
-                    project_id, job_id, repo_url, team_name
+                    team_id, job_id, repo_url, team_name  # Changed from project_id to team_id
                 )
                 
                 results['queued'] += 1
@@ -360,7 +351,7 @@ def retry_dlq_jobs():
         
         # Get all DLQ jobs
         dlq_jobs = supabase.table('analysis_jobs')\
-            .select('id, project_id, metadata')\
+            .select('id, team_id, metadata')\
             .eq('status', 'dlq')\
             .execute()
         
@@ -372,19 +363,18 @@ def retry_dlq_jobs():
         
         for job in dlq_jobs.data:
             job_id = job['id']
-            project_id = job['project_id']
+            team_id = job['team_id']  # Changed from project_id
             
-            # Get project details
-            project = supabase.table('projects')\
-                .select('repo_url, team_id, teams(team_name)')\
-                .eq('id', project_id)\
+            # Get team details (teams table now has repo_url)
+            team = supabase.table('teams')\
+                .select('repo_url, team_name')\
+                .eq('id', team_id)\
                 .single()\
                 .execute()
             
-            if project.data:
-                repo_url = project.data['repo_url']
-                teams_data = project.data.get('teams')
-                team_name = teams_data.get('team_name') if isinstance(teams_data, dict) else None
+            if team.data:
+                repo_url = team.data['repo_url']
+                team_name = team.data.get('team_name')
                 
                 # Reset job status
                 supabase.table('analysis_jobs').update({
@@ -395,7 +385,7 @@ def retry_dlq_jobs():
                 
                 # Queue analysis task
                 analyze_repository_task.delay(
-                    project_id=project_id,
+                    team_id=team_id,  # Changed from project_id
                     job_id=job_id,
                     repo_url=repo_url,
                     team_name=team_name
@@ -451,9 +441,9 @@ def auto_trigger_batch_analysis(force: bool = False):
             logger.info(f"📦 Processing: {batch_name}")
             
             try:
-                # Get teams in batch with projects
+                # Get teams in batch (teams table now has all analysis data)
                 teams = supabase.table('teams')\
-                    .select('id, team_name, project_id, projects(id, repo_url, status, last_analyzed_at)')\
+                    .select('id, team_name, repo_url, status, last_analyzed_at')\
                     .eq('batch_id', batch_id)\
                     .execute()
                 
@@ -467,25 +457,21 @@ def auto_trigger_batch_analysis(force: bool = False):
                 
                 repos = []
                 for team in teams.data:
-                    project = team.get('projects')
-                    if not project:
-                        continue
+                    # Check if team needs analysis
+                    allowed, reason = should_allow_reanalysis(team, force=force)
                     
-                    project_data = project[0] if isinstance(project, list) else project
-                    allowed, reason = should_allow_reanalysis(project_data, force=force)
-                    
-                    if allowed:
+                    if allowed and team.get('repo_url'):
                         # Create analysis job
                         job = supabase.table('analysis_jobs').insert({
-                            'project_id': project_data['id'],
+                            'team_id': team['id'],  # Changed from project_id
                             'status': 'queued',
                             'metadata': {'auto_scheduled': True, 'batch_id': batch_id}
                         }).execute()
                         
                         repos.append({
-                            'project_id': project_data['id'],
+                            'team_id': team['id'],  # Changed from project_id
                             'job_id': job.data[0]['id'],
-                            'repo_url': project_data.get('repo_url'),
+                            'repo_url': team.get('repo_url'),
                             'team_name': team['team_name']
                         })
                 
@@ -586,22 +572,11 @@ def update_team_health_status():
         
         # Get all teams with basic info
         teams_response = supabase.table("teams").select(
-            "id, team_name, last_activity, created_at"
+            "id, team_name, last_activity, created_at, report_json"
         ).execute()
         
         teams = teams_response.data or []
         logger.info(f"📊 Processing {len(teams)} teams")
-        
-        # Get all projects with their report_json (projects have team_id)
-        projects_response = supabase.table("projects").select(
-            "team_id, report_json"
-        ).execute()
-        
-        # Build a lookup dict: team_id -> report_json
-        team_reports = {}
-        for project in (projects_response.data or []):
-            if project.get("team_id"):
-                team_reports[project["team_id"]] = project.get("report_json")
         
         updated = 0
         errors = 0
@@ -609,8 +584,8 @@ def update_team_health_status():
         
         for team in teams:
             try:
-                # Get report from lookup (comes from projects table)
-                report_json = team_reports.get(team["id"])
+                # Get report from team (teams table now has report_json)
+                report_json = team.get("report_json")
                 if isinstance(report_json, str):
                     try:
                         report_json = json.loads(report_json)

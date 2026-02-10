@@ -107,10 +107,10 @@ async def root():
             "result": "GET /api/analysis-result/{job_id}",
             "batch_upload": "POST /api/batch-upload",
             
-            # Projects (Frontend-compatible)
-            "project_detail": "GET /api/projects/{id}",
-            "project_list": "GET /api/projects?status=&tech=&sort=&search=",
-            "delete_project": "DELETE /api/projects/{id}",
+            # Teams (Unified with analysis data)
+            "team_list": "GET /api/teams",
+            "team_detail": "GET /api/teams/{id}",
+            "team_analyze": "POST /api/teams/{id}/analyze",
             
             # Leaderboard (Frontend-compatible)
             "leaderboard": "GET /api/leaderboard?tech=&sort=&search=",
@@ -132,7 +132,7 @@ async def health_check():
         supabase = get_supabase_client()
         
         # Simple query to test connection
-        result = supabase.table("projects").select("id").limit(1).execute()
+        result = supabase.table("teams").select("id").limit(1).execute()
         
         return {
             "status": "healthy",

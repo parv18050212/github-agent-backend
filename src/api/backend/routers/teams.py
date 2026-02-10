@@ -55,7 +55,8 @@ async def list_teams(
     # Build query (base fields only; related data fetched separately for this page)
     query = supabase.table("teams").select(
         "id, team_name, batch_id, mentor_id, status, health_status, last_activity, "
-        "created_at, updated_at, project_id, metadata",
+        "created_at, updated_at, repo_url, metadata, total_score, quality_score, "
+        "security_score, analyzed_at, last_analyzed_at",
         count="exact"
     )
     
@@ -145,15 +146,12 @@ async def list_teams(
         search_term = search.strip()
         matching_team_ids = set()
 
-        team_search = supabase.table("teams").select("id").ilike("team_name", f"%{search_term}%").execute()
+        team_search = supabase.table("teams").select("id").or_(
+            f"team_name.ilike.%{search_term}%,repo_url.ilike.%{search_term}%"
+        ).execute()
         for team in (team_search.data or []):
             if team.get("id"):
                 matching_team_ids.add(team["id"])
-
-        project_search = supabase.table("projects").select("team_id").ilike("repo_url", f"%{search_term}%").execute()
-        for project in (project_search.data or []):
-            if project.get("team_id"):
-                matching_team_ids.add(project["team_id"])
 
         if not matching_team_ids:
             return TeamListResponse(
@@ -187,7 +185,6 @@ async def list_teams(
     teams = response.data or []
     total = response.count if hasattr(response, "count") else len(teams)
 
-    project_ids = [team.get("project_id") for team in teams if team.get("project_id")]
     batch_ids = [team.get("batch_id") for team in teams if team.get("batch_id")]
 
     if batch_ids:
@@ -196,25 +193,10 @@ async def list_teams(
     else:
         batch_map = {}
 
-    if project_ids:
-        projects_response = supabase.table("projects").select(
-            "id, team_id, repo_url, total_score, status, last_analyzed_at"
-        ).in_("id", project_ids).execute()
-        project_map = {project["id"]: project for project in (projects_response.data or [])}
-    else:
-        project_map = {}
-
     for team in teams:
         batch = batch_map.get(team.get("batch_id"))
         if batch:
             team["batches"] = batch
-
-        project = project_map.get(team.get("project_id"))
-        if project:
-            team["projects"] = [project]
-            team["repo_url"] = project.get("repo_url")
-        else:
-            team["projects"] = []
 
     # Compute student_count from students table for the current page of teams.
     team_ids = [team.get("id") for team in teams if team.get("id")]
@@ -286,7 +268,7 @@ async def create_team(
     """
     Create a new team (admin only).
     
-    Creates team with students and optionally links to a project.
+    Creates team with students. Analysis fields are stored directly in the team record.
     """
     supabase = get_supabase_admin_client()
     
@@ -295,14 +277,16 @@ async def create_team(
     if not batch_response.data:
         raise HTTPException(status_code=404, detail="Batch not found")
     
-    common_id = str(uuid4())
+    team_id = str(uuid4())
     
     # Create team
     team_insert = {
-        "id": common_id,
+        "id": team_id,
         "batch_id": str(team_data.batch_id),
         "team_name": team_data.name,
+        "repo_url": team_data.repo_url,
         "health_status": "on_track",
+        "status": "pending",
         "student_count": len(team_data.students) if team_data.students else 0
     }
     
@@ -319,53 +303,34 @@ async def create_team(
         raise HTTPException(status_code=500, detail="Failed to create team")
     
     team = team_response.data[0]
-    team_id = team["id"] # Should be common_id
     
-    # Create project if repo URL provided
+    # Auto-queue analysis if repo URL provided
     if team_data.repo_url:
-        project_insert = {
-            "id": common_id,
-            "team_id": team_id,
-            "batch_id": str(team_data.batch_id),
-            "team_name": team_data.name,
-            "repo_url": team_data.repo_url,
-            "status": "pending"
-        }
-        
-        project_response = supabase.table("projects").insert(project_insert).execute()
-        
-        if project_response.data:
-            # Update team with project_id
-            supabase.table("teams").update({
-                "project_id": common_id
-            }).eq("id", team_id).execute()
+        try:
+            from src.api.backend.crud import AnalysisJobCRUD, TeamCRUD
+            # Create analysis job
+            job = AnalysisJobCRUD.create_job(UUID(team_id))
+            job_id = job.get("id") if job else None
 
-            # Auto-queue analysis for newly created team
+            # Update team status to queued
+            TeamCRUD.update_team_status(UUID(team_id), "queued")
+
+            # Try to enqueue Celery task if available
             try:
-                from src.api.backend.crud import AnalysisJobCRUD, ProjectCRUD
-                # Create analysis job
-                job = AnalysisJobCRUD.create_job(UUID(common_id))
-                job_id = job.get("id") if job else None
-
-                # Update project status to queued
-                ProjectCRUD.update_project_status(UUID(common_id), "queued")
-
-                # Try to enqueue Celery task if available
-                try:
-                    from celery_worker import analyze_repository_task
-                    task = analyze_repository_task.delay(
-                        project_id=common_id,
-                        job_id=str(job_id),
-                        repo_url=team_data.repo_url,
-                        team_name=team_data.name
-                    )
-                    supabase.table('analysis_jobs').update({
-                        'metadata': {'celery_task_id': task.id}
-                    }).eq('id', str(job_id)).execute()
-                except Exception as celery_error:
-                    print(f"⚠ Celery queueing failed for new team: {celery_error}")
-            except Exception as analysis_error:
-                print(f"⚠ Auto-analysis setup failed for new team: {analysis_error}")
+                from celery_worker import analyze_repository_task
+                task = analyze_repository_task.delay(
+                    team_id=team_id,  # Updated to use team_id parameter
+                    job_id=str(job_id),
+                    repo_url=team_data.repo_url,
+                    team_name=team_data.name
+                )
+                supabase.table('analysis_jobs').update({
+                    'metadata': {'celery_task_id': task.id}
+                }).eq('id', str(job_id)).execute()
+            except Exception as celery_error:
+                print(f"⚠ Celery queueing failed for new team: {celery_error}")
+        except Exception as analysis_error:
+            print(f"⚠ Auto-analysis setup failed for new team: {analysis_error}")
     
     # Create students
     if team_data.students:
@@ -386,8 +351,7 @@ async def create_team(
         """
         *,
         batches(id, name, semester, year),
-        students(*),
-        projects!projects_teams_fk(*)
+        students(*)
         """
     ).eq("id", team_id).execute()
     
@@ -407,44 +371,27 @@ async def clear_all_teams(
     """
     supabase = get_supabase_admin_client()
 
-    teams_response = supabase.table("teams").select("id, project_id").eq("batch_id", str(batch_id)).execute()
+    teams_response = supabase.table("teams").select("id").eq("batch_id", str(batch_id)).execute()
     teams_data = teams_response.data or []
 
     if not teams_data:
         return MessageResponse(success=True, message="No teams found for this batch")
 
     team_ids = [team.get("id") for team in teams_data if team.get("id")]
-    project_ids = {team.get("project_id") for team in teams_data if team.get("project_id")}
-
-    projects_response = supabase.table("projects").select("id").eq("batch_id", str(batch_id)).execute()
-    for project in projects_response.data or []:
-        if project.get("id"):
-            project_ids.add(project.get("id"))
 
     if team_ids:
-        team_projects_response = supabase.table("projects").select("id").in_("team_id", team_ids).execute()
-        for project in team_projects_response.data or []:
-            if project.get("id"):
-                project_ids.add(project.get("id"))
-
-    project_id_list = list(project_ids)
-
-    if project_id_list:
-        supabase.table("analysis_jobs").delete().in_("project_id", project_id_list).execute()
-        supabase.table("analysis_snapshots").delete().in_("project_id", project_id_list).execute()
-        supabase.table("issues").delete().in_("project_id", project_id_list).execute()
-        supabase.table("project_comments").delete().in_("project_id", project_id_list).execute()
-        supabase.table("tech_stack").delete().in_("project_id", project_id_list).execute()
-        supabase.table("team_members").delete().in_("project_id", project_id_list).execute()
-
-    if team_ids:
+        # Delete related data (using team_id as project_id after migration)
+        supabase.table("analysis_jobs").delete().in_("project_id", team_ids).execute()
+        supabase.table("analysis_snapshots").delete().in_("project_id", team_ids).execute()
+        supabase.table("issues").delete().in_("project_id", team_ids).execute()
+        supabase.table("project_comments").delete().in_("project_id", team_ids).execute()
+        supabase.table("tech_stack").delete().in_("project_id", team_ids).execute()
+        supabase.table("team_members").delete().in_("project_id", team_ids).execute()
         supabase.table("mentor_team_assignments").delete().in_("team_id", team_ids).execute()
         supabase.table("students").delete().in_("team_id", team_ids).execute()
 
+    # Delete teams
     supabase.table("teams").delete().eq("batch_id", str(batch_id)).execute()
-    if project_id_list:
-        supabase.table("projects").delete().in_("id", project_id_list).execute()
-    supabase.table("projects").delete().eq("batch_id", str(batch_id)).execute()
 
     return MessageResponse(success=True, message="Deleted all teams for this batch")
 
@@ -744,8 +691,10 @@ async def bulk_import_teams_with_mentors(
             yield items[i:i + size]
 
     teams_payload = []
-    projects_payload = []
     students_payload = []
+    assignments_payload = []
+    team_members_payload = []
+    project_ids_for_members = []
     
     # Get all mentors for email mapping
     mentors_response = supabase.table("users").select("id, email, full_name, role, is_mentor").or_("role.eq.mentor,is_mentor.eq.true").execute()
@@ -758,7 +707,7 @@ async def bulk_import_teams_with_mentors(
             mentor_map[m["full_name"].lower()] = m["id"]
 
     # Fetch existing teams in this batch for idempotent imports
-    existing_team_rows = supabase.table("teams").select("id, team_name, project_id").eq(
+    existing_team_rows = supabase.table("teams").select("id, team_name").eq(
         "batch_id", str(batch_id)
     ).execute()
     existing_team_map = {
@@ -772,7 +721,6 @@ async def bulk_import_teams_with_mentors(
     
     # Collect payloads for batch operations
     teams_payload = []
-    projects_payload = []
     assignments_payload = []
     students_payload = []
     team_members_payload = []
@@ -841,23 +789,12 @@ async def bulk_import_teams_with_mentors(
                 "repo_url": team_data.get("repo_url"),
                 "mentor_id": mentor_id,
                 "health_status": "on_track",
+                "status": "pending",
                 "student_count": len(team_data["students"]),
                 "metadata": team_metadata
             }
             team_payload["id"] = team_id
             teams_payload.append(team_payload)
-            
-            # Create or update Project (project_id == team_id)
-            if team_data.get("repo_url"):
-                projects_payload.append({
-                    "id": team_id,
-                    "team_id": team_id,
-                    "batch_id": str(batch_id),
-                    "team_name": team_data["team_name"],
-                    "repo_url": team_data["repo_url"],
-                    "description": team_data.get("project_description", f"Project for {team_data['team_name']}"),
-                    "status": "pending"
-                })
             
             # Create Mentor Assignment
             if mentor_id:
@@ -891,7 +828,7 @@ async def bulk_import_teams_with_mentors(
                 # Team Member Record (for analytics aggregation)
                 if team_data.get("repo_url"): # Only if project exists
                     team_members_to_insert.append({
-                        "project_id": common_id,
+                        "project_id": team_id,  # Using team_id as project_id after migration
                         "name": s_name,
                         "commits": 0,
                         "contribution_pct": 0.0
@@ -931,24 +868,11 @@ async def bulk_import_teams_with_mentors(
         return list(deduped.values())
 
     teams_payload = _dedupe_by_key(teams_payload, "id")
-    projects_payload = _dedupe_by_key(projects_payload, "id")
     students_payload = _dedupe_by_key(students_payload, "email")
 
-    # Batch write teams and projects
+    # Batch write teams
     try:
         if teams_payload:
-            for chunk in _chunk(teams_payload, 200):
-                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
-
-        if projects_payload:
-            for chunk in _chunk(projects_payload, 200):
-                supabase.table("projects").upsert(chunk, on_conflict="id").execute()
-
-            project_team_ids = {proj.get("team_id") for proj in projects_payload}
-            for team in teams_payload:
-                if team.get("id") in project_team_ids:
-                    team["project_id"] = team["id"]
-
             for chunk in _chunk(teams_payload, 200):
                 supabase.table("teams").upsert(chunk, on_conflict="id").execute()
 
@@ -1073,28 +997,18 @@ async def bulk_upload_teams(
                     })
             
             existing_team = existing_team_map.get(team_name.lower())
-            common_id = existing_team["id"] if existing_team else str(uuid4())
+            team_id = existing_team["id"] if existing_team else str(uuid4())
 
             team_payload = {
-                "id": common_id,
+                "id": team_id,
                 "batch_id": str(batch_id),
                 "team_name": team_name,
+                "repo_url": repo_url,
                 "health_status": "on_track",
+                "status": "pending",
                 "student_count": len(students)
             }
             teams_payload.append(team_payload)
-            team_id = common_id
-            
-            if repo_url:
-                projects_payload.append({
-                    "id": team_id,
-                    "team_id": team_id,
-                    "batch_id": str(batch_id),
-                    "team_name": team_name,
-                    "repo_url": repo_url,
-                    "description": description,
-                    "status": "pending"
-                })
             
             if students:
                 students_payload.extend([
@@ -1132,23 +1046,10 @@ async def bulk_upload_teams(
         return list(deduped.values())
 
     teams_payload = _dedupe_by_key(teams_payload, "id")
-    projects_payload = _dedupe_by_key(projects_payload, "id")
     students_payload = _dedupe_by_key(students_payload, "email")
 
     try:
         if teams_payload:
-            for chunk in _chunk(teams_payload, 200):
-                supabase.table("teams").upsert(chunk, on_conflict="id").execute()
-
-        if projects_payload:
-            for chunk in _chunk(projects_payload, 200):
-                supabase.table("projects").upsert(chunk, on_conflict="id").execute()
-
-            project_team_ids = {proj.get("team_id") for proj in projects_payload}
-            for team in teams_payload:
-                if team.get("id") in project_team_ids:
-                    team["project_id"] = team["id"]
-
             for chunk in _chunk(teams_payload, 200):
                 supabase.table("teams").upsert(chunk, on_conflict="id").execute()
 
@@ -1181,46 +1082,24 @@ async def get_team(
     """
     Get detailed team information.
     
-    Returns complete team data including students, project analysis, team members, and health status.
-    Frontend expects: team_name, repo_url, batches, projects, team_members
+    Returns complete team data including students, analysis results, team members, and health status.
+    Frontend expects: team_name, repo_url, batches, analysis fields
     """
     supabase = get_supabase_admin_client()
     
     # Fetch team with all related data
-    # Try by team ID first
     team_response = supabase.table("teams").select(
         """
         *,
         batches(id, name, semester, year),
-        students(*),
-        projects!projects_teams_fk(*)
+        students(*)
         """
     ).eq("id", str(team_id)).execute()
-    
-    # If not found by ID, try by project_id (frontend may send project UUID)
-    if not team_response.data:
-        team_response = supabase.table("teams").select(
-            """
-            *,
-            batches(id, name, semester, year),
-            students(*),
-            projects!projects_teams_fk(*)
-            """
-        ).eq("project_id", str(team_id)).execute()
     
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
     
     team = team_response.data[0]
-    
-    # DEBUG LOGGING
-    print(f"[Teams API] get_team {team_id}")
-    print(f"[Teams API] Team data: {team.keys()}")
-    if "students" in team:
-        print(f"[Teams API] Student count: {len(team['students'])}")
-        print(f"[Teams API] Students: {team['students']}")
-    else:
-        print(f"[Teams API] 'students' key MISSING in response")
     
     # Check authorization
     if current_user.role == "mentor":
@@ -1235,13 +1114,11 @@ async def get_team(
                     detail="Access denied: You are not assigned to this team"
                 )
     
-    # Fetch team members if project exists
+    # Fetch team members (analytics data) if team has been analyzed
     team_members = []
-    project = team.get("projects")
-    
-    if project:
-        project_id = project[0]["id"] if isinstance(project, list) else project["id"]
-        members_response = supabase.table("team_members").select("*").eq("project_id", project_id).execute()
+    if team.get("repo_url"):
+        # Team members are stored with team_id now (after migration)
+        members_response = supabase.table("team_members").select("*").eq("project_id", str(team_id)).execute()
         team_members = members_response.data or []
     
     # Add team_members to response
@@ -1274,7 +1151,7 @@ async def update_team(
     
     # Check if team exists
     existing_team = supabase.table("teams").select(
-        "id, project_id, batch_id, team_name"
+        "id, batch_id, team_name"
     ).eq("id", str(team_id)).execute()
     if not existing_team.data:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -1292,47 +1169,18 @@ async def update_team(
         update_data["risk_flags"] = team_data.risk_flags
     if team_data.repo_url is not None:
         update_data["repo_url"] = team_data.repo_url
+    if team_data.description is not None:
+        update_data["description"] = team_data.description
     
     # Update team
     team_response = supabase.table("teams").update(update_data).eq("id", str(team_id)).execute()
-
-    # Sync or create project when repo_url changes
-    if team_data.repo_url is not None:
-        project_id = team_row.get("project_id")
-        if project_id:
-            supabase.table("projects").update({
-                "repo_url": team_data.repo_url,
-                "team_name": team_data.name or team_row.get("team_name")
-            }).eq("id", str(project_id)).execute()
-        elif team_data.repo_url:
-            new_project_id = uuid4()
-            project_insert = {
-                "id": str(new_project_id),
-                "team_id": str(team_id),
-                "batch_id": str(team_row.get("batch_id")),
-                "team_name": team_data.name or team_row.get("team_name"),
-                "repo_url": team_data.repo_url,
-                "status": "pending"
-            }
-            project_response = supabase.table("projects").insert(project_insert).execute()
-            if project_response.data:
-                supabase.table("teams").update({
-                    "project_id": str(new_project_id)
-                }).eq("id", str(team_id)).execute()
-    
-    # Update project if description provided
-    if team_data.description is not None:
-        supabase.table("projects").update({
-            "description": team_data.description
-        }).eq("team_id", str(team_id)).execute()
     
     # Fetch updated team
     updated_team = supabase.table("teams").select(
         """
         *,
         batches(id, name, semester, year),
-        students(*),
-        projects!projects_teams_fk(*)
+        students(*)
         """
     ).eq("id", str(team_id)).execute()
     
@@ -1350,13 +1198,13 @@ async def delete_team(
     """
     Delete a team and its associated data (admin only).
     
-    Cascades to delete students, project, and assignments.
+    Cascades to delete students and assignments.
     """
     supabase = get_supabase_admin_client()
     print(f"[Teams API] delete_team called for team_id={team_id}")
     
     # Check if team exists
-    existing_team = supabase.table("teams").select("id, project_id").eq("id", str(team_id)).execute()
+    existing_team = supabase.table("teams").select("id").eq("id", str(team_id)).execute()
     if not existing_team.data:
         raise HTTPException(status_code=404, detail="Team not found")
     
@@ -1550,31 +1398,24 @@ async def analyze_team(
     """
     supabase = get_supabase()
     
-    # Get team with project
-    team_response = supabase.table("teams").select(
-        "*, projects!projects_teams_fk(*)"
-    ).eq("id", str(team_id)).execute()
+    # Get team
+    team_response = supabase.table("teams").select("*").eq("id", str(team_id)).execute()
     
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
     
     team = team_response.data[0]
     
-    # Check if project exists
-    project = team.get("projects")
-    if not project:
-        raise HTTPException(status_code=404, detail="Team has no associated project")
-    
-    # Handle both array and object formats
-    project_data = project[0] if isinstance(project, list) else project
-    project_id = project_data["id"]
+    # Check if team has repo URL
+    if not team.get("repo_url"):
+        raise HTTPException(status_code=404, detail="Team has no repository URL")
     
     # For manual admin triggers, check if currently analyzing
-    current_status = project_data.get("status")
+    current_status = team.get("status")
     if current_status in ["analyzing", "queued"]:
         return AnalysisJobResponse(
             job_id=None,
-            project_id=project_id,
+            project_id=str(team_id),
             status="skipped",
             message=f"Analysis already in progress (status: {current_status})"
         )
@@ -1615,9 +1456,9 @@ async def analyze_team(
         except Exception as run_error:
             print(f"⚠ Manual batch run creation failed: {run_error}")
 
-    # Create analysis job
+    # Create analysis job (using team_id as project_id)
     job_insert = {
-        "project_id": project_id,
+        "project_id": str(team_id),
         "status": "queued",
         "requested_by": str(current_user.user_id),
         "started_at": datetime.now().isoformat(),
@@ -1639,10 +1480,10 @@ async def analyze_team(
     
     job = job_response.data[0]
     
-    # Update project status
-    supabase.table("projects").update({
+    # Update team status
+    supabase.table("teams").update({
         "status": "queued"
-    }).eq("id", project_id).execute()
+    }).eq("id", str(team_id)).execute()
     
     # Queue task in the background to return fast
     def _queue_analysis_job():
@@ -1650,9 +1491,9 @@ async def analyze_team(
         try:
             from celery_worker import analyze_repository_task
             task = analyze_repository_task.delay(
-                project_id=str(project_id),
+                team_id=str(team_id),  # Updated to use team_id parameter
                 job_id=str(job["id"]),
-                repo_url=project_data.get("repo_url"),
+                repo_url=team.get("repo_url"),
                 team_name=team.get("team_name")
             )
             admin_supabase = get_supabase_admin_client()
@@ -1667,9 +1508,9 @@ async def analyze_team(
             try:
                 from src.api.backend.background import run_analysis_job
                 run_analysis_job(
-                    project_id=str(project_id),
+                    project_id=str(team_id),
                     job_id=str(job["id"]),
-                    repo_url=project_data.get("repo_url"),
+                    repo_url=team.get("repo_url"),
                     team_name=team.get("team_name")
                 )
             except Exception as fallback_error:
@@ -1682,7 +1523,7 @@ async def analyze_team(
 
     return AnalysisJobResponse(
         job_id=job["id"],
-        project_id=project_id,
+        project_id=str(team_id),
         status="queued",
         message="Analysis queued successfully"
     )
