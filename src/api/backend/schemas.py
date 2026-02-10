@@ -438,6 +438,7 @@ class UserUpdateRequest(BaseModel):
 class BatchCreateRequest(BaseModel):
     """Create new batch"""
     name: str = Field(..., description="Batch name (e.g., '4th Sem 2024')")
+    program: Optional[str] = Field(None, description="Program/department (e.g., 'AI/ML')")
     semester: str = Field(..., description="Semester (e.g., '4th Sem')")
     year: int = Field(..., ge=2020, le=2100, description="Year")
     start_date: datetime
@@ -453,6 +454,7 @@ class BatchCreateRequest(BaseModel):
 class BatchUpdateRequest(BaseModel):
     """Update batch"""
     name: Optional[str] = None
+    program: Optional[str] = None
     semester: Optional[str] = None
     year: Optional[int] = Field(None, ge=2020, le=2100)
     start_date: Optional[datetime] = None
@@ -464,6 +466,7 @@ class BatchResponse(BaseModel):
     """Batch response"""
     id: UUID
     name: str
+    program: Optional[str] = None
     semester: str
     year: int
     start_date: datetime
@@ -479,6 +482,7 @@ class BatchStatsResponse(BaseModel):
     """Batch with statistics"""
     id: UUID
     name: str
+    program: Optional[str] = None
     semester: str
     year: int
     start_date: datetime

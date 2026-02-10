@@ -123,6 +123,7 @@ class ProjectWithDetails(Project):
 class BatchBase(BaseModel):
     """Base batch model"""
     name: str = Field(..., description="Batch name (e.g., '4th Sem 2024')")
+    program: Optional[str] = Field(None, description="Program/department (e.g., 'AI/ML')")
     semester: str = Field(..., description="Semester (e.g., '4th Sem', '6th Sem')")
     year: int = Field(..., description="Year (e.g., 2024)")
     start_date: datetime
@@ -138,6 +139,7 @@ class BatchCreate(BatchBase):
 class BatchUpdate(BaseModel):
     """Model for updating a batch"""
     name: Optional[str] = None
+    program: Optional[str] = None
     semester: Optional[str] = None
     year: Optional[int] = None
     start_date: Optional[datetime] = None

@@ -62,6 +62,7 @@ async def create_batch(
         # Create batch
         batch = {
             "name": batch_data.name,
+            "program": batch_data.program,
             "semester": batch_data.semester,
             "year": batch_data.year,
             "start_date": batch_data.start_date.isoformat(),
@@ -82,6 +83,7 @@ async def create_batch(
         return BatchResponse(
             id=UUID(created_batch["id"]),
             name=created_batch["name"],
+            program=created_batch.get("program"),
             semester=created_batch["semester"],
             year=created_batch["year"],
             start_date=datetime.fromisoformat(created_batch["start_date"].replace("Z", "+00:00")),
@@ -139,6 +141,7 @@ async def list_batches(
             batches.append(BatchResponse(
                 id=UUID(batch["id"]),
                 name=batch["name"],
+                program=batch.get("program"),
                 semester=batch["semester"],
                 year=batch["year"],
                 start_date=datetime.fromisoformat(batch["start_date"].replace("Z", "+00:00")),
@@ -234,6 +237,7 @@ async def get_batch(
         return BatchStatsResponse(
             id=UUID(batch["id"]),
             name=batch["name"],
+            program=batch.get("program"),
             semester=batch["semester"],
             year=batch["year"],
             start_date=datetime.fromisoformat(batch["start_date"].replace("Z", "+00:00")),
@@ -300,6 +304,8 @@ async def update_batch(
         update_data = {}
         if batch_data.name is not None:
             update_data["name"] = batch_data.name
+        if batch_data.program is not None:
+            update_data["program"] = batch_data.program
         if batch_data.semester is not None:
             update_data["semester"] = batch_data.semester
         if batch_data.year is not None:
@@ -336,6 +342,7 @@ async def update_batch(
         return BatchResponse(
             id=UUID(updated_batch["id"]),
             name=updated_batch["name"],
+            program=updated_batch.get("program"),
             semester=updated_batch["semester"],
             year=updated_batch["year"],
             start_date=datetime.fromisoformat(updated_batch["start_date"].replace("Z", "+00:00")),
