@@ -31,7 +31,7 @@ services:
       - ./celery_app.py:/app/celery_app.py
       - ./reports:/app/reports
       - ./logs:/app/logs
-    command: uvicorn main:app --host 0.0.0.0 --port 3000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 3000 --reload --timeout-keep-alive 120
     networks:
       - app-network
     restart: unless-stopped

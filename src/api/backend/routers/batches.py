@@ -201,7 +201,7 @@ async def get_batch(
         
         # Get teams in this batch
         teams_result = supabase.table("teams")\
-            .select("id, project_id, health_status")\
+            .select("id, health_status")\
             .eq("batch_id", str(batch_id))\
             .execute()
         
@@ -210,18 +210,18 @@ async def get_batch(
         # Calculate statistics
         at_risk_teams = sum(1 for t in teams if t.get("health_status") in ["at_risk", "critical"])
         
-        # Get project IDs for score calculation
-        project_ids = [t["project_id"] for t in teams if t.get("project_id")]
+        # Get team IDs for score calculation (team.id is the same as old project_id)
+        team_ids = [t["id"] for t in teams if t.get("id")]
         
         avg_score = None
         completed_projects = 0
         pending_projects = 0
         
-        if project_ids:
-            # Get teams (projects table has been dropped and merged into teams)
+        if team_ids:
+            # Get teams with scores
             teams_result = supabase.table("teams")\
                 .select("id, status, total_score")\
-                .in_("id", [str(pid) for pid in project_ids])\
+                .in_("id", [str(tid) for tid in team_ids])\
                 .execute()
             
             teams = teams_result.data or []
