@@ -65,24 +65,29 @@ def create_snapshot_from_team(team_id: str, run_number: int, batch_run_id: str):
         }
         
         # Create snapshot
+        # Extract additional metrics from report
+        commit_count = report_json.get('commit_count', 0)
+        file_count = report_json.get('file_count', 0)
+        lines_of_code = report_json.get('lines_of_code', 0)
+        tech_stack_count = len(report_json.get('tech_stack', [])) if report_json.get('tech_stack') else 0
+        issue_count = len(report_json.get('issues', [])) if report_json.get('issues') else 0
+        
         snapshot_data = {
             'team_id': team_id,
             'batch_run_id': batch_run_id,
             'run_number': run_number,
-            'analysis_date': datetime.utcnow().isoformat(),
-            'github_url': team_data.get('repo_url'),  # Changed from github_url to repo_url
+            'analyzed_at': datetime.utcnow().isoformat(),
             'quality_score': scores['quality_score'],
             'security_score': scores['security_score'],
-            'architecture_score': scores['architecture_score'],
+            'engineering_score': scores['architecture_score'],  # Map architecture to engineering
             'documentation_score': scores['documentation_score'],
             'originality_score': scores['originality_score'],
             'total_score': scores['total_score'],
-            'metadata': {
-                'batch_id': team_data.get('batch_id'),
-                'report_snapshot': report_json,  # Full report for detailed comparisons
-                'created_by': 'celery_worker',
-                'snapshot_type': 'automatic'
-            }
+            'commit_count': commit_count,
+            'file_count': file_count,
+            'lines_of_code': lines_of_code,
+            'tech_stack_count': tech_stack_count,
+            'issue_count': issue_count
         }
         
         supabase.table('analysis_snapshots').insert(snapshot_data).execute()

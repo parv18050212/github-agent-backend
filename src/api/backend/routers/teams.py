@@ -1531,13 +1531,12 @@ async def analyze_team(
         except Exception as run_error:
             print(f"⚠ Manual batch run creation failed: {run_error}")
 
-    # Create analysis job (using team_id as project_id)
+    # Create analysis job
     job_insert = {
-        "project_id": str(team_id),
+        "team_id": str(team_id),
         "status": "queued",
         "requested_by": str(current_user.user_id),
         "started_at": datetime.now().isoformat(),
-        "team_id": str(team_id),
         "batch_id": str(team.get("batch_id")) if team.get("batch_id") else None,
         "run_number": run_number,
         "metadata": {

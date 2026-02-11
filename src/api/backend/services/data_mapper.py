@@ -322,7 +322,6 @@ class DataMapper:
                             snapshot_data = {
                                 "team_id": team_id,
                                 "batch_run_id": batch_run_id,
-                                "project_id": str(project_id),  # Keep for backward compatibility
                                 "run_number": run_number,
                                 "total_score": scores.get("total_score"),
                                 "originality_score": scores.get("originality_score"),
