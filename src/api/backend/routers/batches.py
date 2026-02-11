@@ -506,7 +506,7 @@ async def trigger_batch_analysis(
                 }).eq("id", team_id).execute()
                 
                 repos.append({
-                    "project_id": project_id,
+                    "project_id": team_id,  # Using team_id (kept as project_id for Celery compatibility)
                     "job_id": job_id,
                     "repo_url": repo_url,
                     "team_name": team["team_name"]
