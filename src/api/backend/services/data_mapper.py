@@ -276,13 +276,13 @@ class DataMapper:
                 from src.api.backend.database import get_supabase_admin_client
                 supabase = get_supabase_admin_client()
                 
-                # Get project details to check for batch_run metadata
-                project_result = supabase.table("projects").select("id, team_id, batch_id").eq("id", str(project_id)).execute()
+                # Get team details to check for batch_run metadata (project_id is now team_id after migration)
+                team_result = supabase.table("teams").select("id, batch_id").eq("id", str(project_id)).execute()
                 
-                if project_result.data and len(project_result.data) > 0:
-                    project = project_result.data[0]
-                    team_id = project.get("team_id")
-                    batch_id = project.get("batch_id")
+                if team_result.data and len(team_result.data) > 0:
+                    team = team_result.data[0]
+                    team_id = team.get("id")  # team_id is the same as project_id after migration
+                    batch_id = team.get("batch_id")
                     
                     if team_id and batch_id:
                         batch_run_id = None
@@ -291,7 +291,7 @@ class DataMapper:
                         # Prefer job metadata (manual or batch) if available
                         job_result = supabase.table("analysis_jobs")\
                             .select("metadata, run_number")\
-                            .eq("project_id", str(project_id))\
+                            .eq("team_id", str(project_id))\
                             .order("started_at", desc=True)\
                             .limit(1)\
                             .execute()
@@ -322,7 +322,7 @@ class DataMapper:
                             snapshot_data = {
                                 "team_id": team_id,
                                 "batch_run_id": batch_run_id,
-                                "project_id": str(project_id),
+                                "project_id": str(project_id),  # Keep for backward compatibility
                                 "run_number": run_number,
                                 "total_score": scores.get("total_score"),
                                 "originality_score": scores.get("originality_score"),
@@ -403,16 +403,11 @@ class DataMapper:
                 cache.invalidate_project(str(project_id))
 
                 # Also clear team-scoped caches (analytics/report endpoints)
-                from src.api.backend.database import get_supabase_admin_client
-                supabase = get_supabase_admin_client()
-                project_result = supabase.table("projects").select("team_id").eq("id", str(project_id)).execute()
-                if project_result.data and len(project_result.data) > 0:
-                    team_id = project_result.data[0].get("team_id")
-                    if team_id:
-                        cache.delete_pattern(f"analytics:{team_id}")
-                        cache.delete_pattern(f"report:team:{team_id}")
+                # Note: project_id is now team_id after migration, so we can use it directly
+                cache.delete_pattern(f"analytics:{project_id}")
+                cache.delete_pattern(f"report:team:{project_id}")
 
-                batch_logger.info(f"Cache invalidated for project {project_id}")
+                batch_logger.info(f"Cache invalidated for team {project_id}")
             except Exception as e:
                 batch_logger.warning(f"Failed to invalidate cache: {e}")
             

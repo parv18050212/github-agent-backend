@@ -380,12 +380,12 @@ async def clear_all_teams(
     team_ids = [team.get("id") for team in teams_data if team.get("id")]
 
     if team_ids:
-        # Delete related data (using team_id as project_id after migration)
-        supabase.table("analysis_jobs").delete().in_("project_id", team_ids).execute()
-        supabase.table("analysis_snapshots").delete().in_("project_id", team_ids).execute()
-        supabase.table("issues").delete().in_("project_id", team_ids).execute()
-        supabase.table("project_comments").delete().in_("project_id", team_ids).execute()
-        supabase.table("tech_stack").delete().in_("project_id", team_ids).execute()
+        # Delete related data (all tables now use team_id after migration)
+        supabase.table("analysis_jobs").delete().in_("team_id", team_ids).execute()
+        supabase.table("analysis_snapshots").delete().in_("team_id", team_ids).execute()
+        supabase.table("issues").delete().in_("team_id", team_ids).execute()
+        supabase.table("project_comments").delete().in_("team_id", team_ids).execute()
+        supabase.table("tech_stack").delete().in_("team_id", team_ids).execute()
         supabase.table("team_members").delete().in_("team_id", team_ids).execute()
         supabase.table("mentor_team_assignments").delete().in_("team_id", team_ids).execute()
         supabase.table("students").delete().in_("team_id", team_ids).execute()

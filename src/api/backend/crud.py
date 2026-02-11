@@ -225,9 +225,9 @@ class AnalysisJobCRUD:
 
     @staticmethod
     def delete_by_project(project_id: UUID) -> bool:
-        """Delete all analysis jobs for a project"""
+        """Delete all analysis jobs for a team (project_id param name kept for compatibility)"""
         supabase = get_supabase_client()
-        result = supabase.table("analysis_jobs").delete().eq("project_id", str(project_id)).execute()
+        result = supabase.table("analysis_jobs").delete().eq("team_id", str(project_id)).execute()
         return True
 
 
@@ -741,9 +741,10 @@ class ProjectCommentCRUD:
 
     @staticmethod
     def add_comment(project_id: str, user_id: str, comment: str, is_private: bool = False) -> Dict[str, Any]:
+        """Add comment for a team (project_id param name kept for compatibility)"""
         supabase = get_supabase_client()
         data = {
-            "project_id": project_id,
+            "team_id": project_id,  # Changed from project_id to team_id
             "user_id": user_id,
             "comment": comment,
             "is_private": is_private,
@@ -755,8 +756,9 @@ class ProjectCommentCRUD:
 
     @staticmethod
     def list_comments(project_id: str) -> List[Dict[str, Any]]:
+        """List comments for a team (project_id param name kept for compatibility)"""
         supabase = get_supabase_client()
-        result = supabase.table("project_comments").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
+        result = supabase.table("project_comments").select("*").eq("team_id", project_id).order("created_at", desc=True).execute()
         return result.data or []
 
     @staticmethod
