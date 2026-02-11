@@ -35,11 +35,11 @@ async def get_team_analysis_history(
         "*, batch_analysis_runs!inner(run_number, started_at, completed_at)"
     ).eq("team_id", team_id).order("run_number", desc=True).limit(limit).execute()
     
-    # Get current/latest scores from projects table
-    current = supabase.table("projects").select(
+    # Get current/latest scores from teams table (projects table has been dropped)
+    current = supabase.table("teams").select(
         "total_score, quality_score, security_score, originality_score, "
         "architecture_score, documentation_score, last_analyzed_at"
-    ).eq("team_id", team_id).execute()
+    ).eq("id", team_id).execute()
     
     results = []
     
@@ -188,18 +188,18 @@ async def create_analysis_snapshot(
     """
     supabase = get_supabase_admin_client()
     
-    # Get current project data
-    project = supabase.table("projects").select(
+    # Get current team data (projects table has been dropped and merged into teams)
+    team = supabase.table("teams").select(
         "id, total_score, originality_score, quality_score, security_score, "
         "effort_score, implementation_score, engineering_score, organization_score, "
         "documentation_score, total_commits, report_json"
-    ).eq("team_id", team_id).execute()
+    ).eq("id", team_id).execute()
     
-    if not project.data:
-        raise HTTPException(status_code=404, detail="No project found for team")
+    if not team.data:
+        raise HTTPException(status_code=404, detail="Team not found")
     
-    proj = project.data[0]
-    report_json = proj.get("report_json", {})
+    team_data = team.data[0]
+    report_json = team_data.get("report_json", {})
     
     # Extract metadata from report
     structure = report_json.get("structure", {})
@@ -208,22 +208,22 @@ async def create_analysis_snapshot(
         "id": str(uuid4()),
         "team_id": team_id,
         "batch_run_id": batch_run_id,
-        "project_id": proj["id"],
+        "project_id": team_data["id"],  # Keep for backward compatibility
         "run_number": run_number,
         
         # Scores
-        "total_score": proj.get("total_score"),
-        "originality_score": proj.get("originality_score"),
-        "quality_score": proj.get("quality_score"),
-        "security_score": proj.get("security_score"),
-        "effort_score": proj.get("effort_score"),
-        "implementation_score": proj.get("implementation_score"),
-        "engineering_score": proj.get("engineering_score"),
-        "organization_score": proj.get("organization_score"),
-        "documentation_score": proj.get("documentation_score"),
+        "total_score": team_data.get("total_score"),
+        "originality_score": team_data.get("originality_score"),
+        "quality_score": team_data.get("quality_score"),
+        "security_score": team_data.get("security_score"),
+        "effort_score": team_data.get("effort_score"),
+        "implementation_score": team_data.get("implementation_score"),
+        "engineering_score": team_data.get("engineering_score"),
+        "organization_score": team_data.get("organization_score"),
+        "documentation_score": team_data.get("documentation_score"),
         
         # Metadata
-        "commit_count": proj.get("total_commits") or report_json.get("total_commits", 0),
+        "commit_count": team_data.get("total_commits") or report_json.get("total_commits", 0),
         "file_count": structure.get("file_count", 0),
         "lines_of_code": structure.get("loc", 0),
         "tech_stack_count": len(report_json.get("stack", [])),

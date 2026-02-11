@@ -218,19 +218,19 @@ async def get_batch(
         pending_projects = 0
         
         if project_ids:
-            # Get projects
-            projects_result = supabase.table("projects")\
+            # Get teams (projects table has been dropped and merged into teams)
+            teams_result = supabase.table("teams")\
                 .select("id, status, total_score")\
                 .in_("id", [str(pid) for pid in project_ids])\
                 .execute()
             
-            projects = projects_result.data or []
+            teams = teams_result.data or []
             
-            completed_projects = sum(1 for p in projects if p.get("status") == "completed")
-            pending_projects = sum(1 for p in projects if p.get("status") in ["pending", "analyzing"])
+            completed_projects = sum(1 for t in teams if t.get("status") == "completed")
+            pending_projects = sum(1 for t in teams if t.get("status") in ["pending", "analyzing"])
             
-            # Calculate average score for completed projects
-            scores = [p["total_score"] for p in projects if p.get("total_score") is not None]
+            # Calculate average score for completed teams
+            scores = [t["total_score"] for t in teams if t.get("total_score") is not None]
             if scores:
                 avg_score = sum(scores) / len(scores)
         
@@ -500,8 +500,8 @@ async def trigger_batch_analysis(
                 job_result = supabase.table("analysis_jobs").insert(job_insert).execute()
                 job_id = job_result.data[0]["id"]
                 
-                # Update project status
-                supabase.table("projects").update({
+                # Update team status (projects table has been dropped)
+                supabase.table("teams").update({
                     "status": "queued"
                 }).eq("id", project_id).execute()
                 
@@ -752,29 +752,20 @@ async def delete_batch(
             )
         
         # Cleanup related project data (projects are not cascaded by batch delete)
-        teams_response = supabase.table("teams").select("id, project_id").eq("batch_id", str(batch_id)).execute()
+        teams_response = supabase.table("teams").select("id").eq("batch_id", str(batch_id)).execute()
         teams_data = teams_response.data or []
 
         team_ids = [team.get("id") for team in teams_data if team.get("id")]
-        project_ids = {team.get("project_id") for team in teams_data if team.get("project_id")}
 
-        projects_response = supabase.table("projects").select("id").eq("batch_id", str(batch_id)).execute()
-        for project in projects_response.data or []:
-            if project.get("id"):
-                project_ids.add(project.get("id"))
-
-        project_id_list = list(project_ids)
-
-        if project_id_list:
-            supabase.table("analysis_jobs").delete().in_("project_id", project_id_list).execute()
-            supabase.table("analysis_snapshots").delete().in_("project_id", project_id_list).execute()
-            supabase.table("issues").delete().in_("project_id", project_id_list).execute()
-            supabase.table("project_comments").delete().in_("project_id", project_id_list).execute()
-            supabase.table("tech_stack").delete().in_("project_id", project_id_list).execute()
-            supabase.table("team_members").delete().in_("project_id", project_id_list).execute()
-            supabase.table("projects").delete().in_("id", project_id_list).execute()
-
+        # Projects table has been dropped - all data is now in teams table
+        # team_ids are the same as old project_ids after migration
         if team_ids:
+            supabase.table("analysis_jobs").delete().in_("team_id", team_ids).execute()
+            supabase.table("analysis_snapshots").delete().in_("team_id", team_ids).execute()
+            supabase.table("issues").delete().in_("team_id", team_ids).execute()
+            supabase.table("project_comments").delete().in_("team_id", team_ids).execute()
+            supabase.table("tech_stack").delete().in_("team_id", team_ids).execute()
+            supabase.table("team_members").delete().in_("team_id", team_ids).execute()
             supabase.table("mentor_team_assignments").delete().in_("team_id", team_ids).execute()
             supabase.table("students").delete().in_("team_id", team_ids).execute()
 
