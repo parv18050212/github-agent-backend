@@ -193,12 +193,14 @@ class DataMapper:
             ai_cons = judge.get("constructive_feedback", "")
             
             # Map to actual database column names (teams table schema)
+            # Note: ai_pros and ai_cons are array columns in the database
             team_data = {
                 **scores,
                 "total_commits": report.get("total_commits", 0),
                 "verdict": str(verdict)[:255] if verdict else None,
-                "ai_pros": str(ai_pros)[:5000] if ai_pros else None,
-                "ai_cons": str(ai_cons)[:5000] if ai_cons else None,
+                # Convert strings to arrays for array columns
+                "ai_pros": [str(ai_pros)[:5000]] if ai_pros else [],
+                "ai_cons": [str(ai_cons)[:5000]] if ai_cons else [],
                 "status": "completed",
                 "last_analyzed_at": datetime.now().isoformat()  # Track when analysis completed
             }
