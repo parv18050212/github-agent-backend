@@ -407,9 +407,9 @@ async def trigger_batch_analysis(
         # Calculate current week number
         batch = batch_result.data[0]
         
-        # Get all teams in this batch with projects
+        # Get all teams in this batch (projects table has been dropped)
         teams_result = supabase.table("teams")\
-            .select("id, team_name, project_id, projects!projects_teams_fk(id, repo_url, status)")\
+            .select("id, team_name, repo_url, status")\
             .eq("batch_id", str(batch_id))\
             .execute()
         
@@ -466,18 +466,18 @@ async def trigger_batch_analysis(
         from src.api.backend.routers.analysis import should_allow_reanalysis
         
         for team in teams:
-            project = team.get("projects")
-            if not project:
+            # Projects table has been dropped - all data is now in teams table
+            team_id = team["id"]
+            repo_url = team.get("repo_url")
+            
+            if not repo_url:
                 jobs_skipped += 1
-                skipped_reasons.append(f"{team['team_name']}: No project")
+                skipped_reasons.append(f"{team['team_name']}: No repository URL")
                 continue
             
-            project_data = project[0] if isinstance(project, list) else project
-            project_id = project_data["id"]
-            repo_url = project_data.get("repo_url")
-            
             # Check if re-analysis should be allowed (auto-scheduled analysis respects interval)
-            allowed, reason = should_allow_reanalysis(project_data, force=force)
+            # Pass team data directly (team is now the project)
+            allowed, reason = should_allow_reanalysis(team, force=force)
             if not allowed:
                 jobs_skipped += 1
                 skipped_reasons.append(f"{team['team_name']}: {reason}")
@@ -485,14 +485,14 @@ async def trigger_batch_analysis(
             
             # Create analysis job
             job_insert = {
-                "project_id": project_id,
+                "team_id": team_id,  # Changed from project_id to team_id
                 "status": "queued",
                 "requested_by": str(current_user.user_id),
                 "started_at": datetime.now().isoformat(),
                 "metadata": {
                     "batch_run_id": run_id,
                     "run_number": run_number,
-                    "team_id": team["id"]
+                    "team_id": team_id
                 }
             }
             
@@ -503,7 +503,7 @@ async def trigger_batch_analysis(
                 # Update team status (projects table has been dropped)
                 supabase.table("teams").update({
                     "status": "queued"
-                }).eq("id", project_id).execute()
+                }).eq("id", team_id).execute()
                 
                 repos.append({
                     "project_id": project_id,

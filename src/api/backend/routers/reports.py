@@ -51,9 +51,10 @@ async def get_batch_report(
     
     batch = batch_response.data[0]
     
-    # Get all teams in the batch with their project data AND students (single query)
+    # Get all teams in the batch with students (single query)
+    # Projects table has been dropped - all analysis data is now in teams table
     teams_response = supabase.table("teams").select(
-        "*, projects!projects_teams_fk(*), students(*)"
+        "*, students(*)"
     ).eq("batch_id", batchId).execute()
     
     teams = teams_response.data or []
@@ -66,22 +67,13 @@ async def get_batch_report(
     teams_data = []
     
     for idx, team in enumerate(teams):
-        # Get project analysis if it exists
-        project = None
-        if team.get("projects"):
-            if isinstance(team["projects"], list):
-                project = team["projects"][0] if team["projects"] else None
-            else:
-                project = team["projects"]
-        
-        analysis_result = {}
-        if project:
-            analysis_result = project.get("analysis_result", {})
-            if isinstance(analysis_result, str):
-                try:
-                    analysis_result = json.loads(analysis_result)
-                except:
-                    analysis_result = {}
+        # Projects table has been dropped - analysis data is now in teams table
+        analysis_result = team.get("analysis_result", {})
+        if isinstance(analysis_result, str):
+            try:
+                analysis_result = json.loads(analysis_result)
+            except:
+                analysis_result = {}
         
         total_score = analysis_result.get("totalScore", 0)
         if total_score > 0:
@@ -99,7 +91,8 @@ async def get_batch_report(
             "documentationScore": analysis_result.get("documentationScore", 0),
             "healthStatus": team.get("health_status", "on_track"),
             "mentorId": team.get("mentor_id"),
-            "frameworks": analysis_result.get("frameworks", [])
+            "frameworks": analysis_result.get("frameworks", []),
+            "lastAnalyzed": team.get("last_analyzed_at")
         })
     
     # Sort teams by total score descending
@@ -129,49 +122,33 @@ async def get_batch_report(
     
     most_used_tech = max(framework_counts, key=framework_counts.get) if framework_counts else "Unknown"
     
-    # Get AI usage statistics from teams
+    # Get AI usage statistics from teams (projects table has been dropped)
     for team in teams:
-        project = None
-        if team.get("projects"):
-            if isinstance(team["projects"], list):
-                project = team["projects"][0] if team["projects"] else None
-            else:
-                project = team["projects"]
+        analysis_result = team.get("analysis_result", {})
+        if isinstance(analysis_result, str):
+            try:
+                analysis_result = json.loads(analysis_result)
+            except:
+                analysis_result = {}
         
-        if project:
-            analysis_result = project.get("analysis_result", {})
-            if isinstance(analysis_result, str):
-                try:
-                    analysis_result = json.loads(analysis_result)
-                except:
-                    analysis_result = {}
-            
-            ai_percentage = analysis_result.get("aiGeneratedPercentage", 0)
-            if ai_percentage > 0:
-                total_ai_usage.append(ai_percentage)
+        ai_percentage = analysis_result.get("aiGeneratedPercentage", 0)
+        if ai_percentage > 0:
+            total_ai_usage.append(ai_percentage)
     
     average_ai_usage = sum(total_ai_usage) / len(total_ai_usage) if total_ai_usage else 0
     
-    # Count security issues
+    # Count security issues (projects table has been dropped)
     total_security_issues = 0
     for team in teams:
-        project = None
-        if team.get("projects"):
-            if isinstance(team["projects"], list):
-                project = team["projects"][0] if team["projects"] else None
-            else:
-                project = team["projects"]
+        analysis_result = team.get("analysis_result", {})
+        if isinstance(analysis_result, str):
+            try:
+                analysis_result = json.loads(analysis_result)
+            except:
+                analysis_result = {}
         
-        if project:
-            analysis_result = project.get("analysis_result", {})
-            if isinstance(analysis_result, str):
-                try:
-                    analysis_result = json.loads(analysis_result)
-                except:
-                    analysis_result = {}
-            
-            security_issues = analysis_result.get("securityIssues", [])
-            total_security_issues += len(security_issues) if isinstance(security_issues, list) else 0
+        security_issues = analysis_result.get("securityIssues", [])
+        total_security_issues += len(security_issues) if isinstance(security_issues, list) else 0
     
     # Build response
     report = {
@@ -353,7 +330,8 @@ async def get_mentor_report(
         }
 
     # 2. Fetch full team data for these IDs (include students in single query)
-    query = supabase.table("teams").select("*, projects!projects_teams_fk(*), students(*)").in_("id", mentor_team_ids)
+    # Projects table has been dropped - all analysis data is now in teams table
+    query = supabase.table("teams").select("*, students(*)").in_("id", mentor_team_ids)
     
     if batchId:
         query = query.eq("batch_id", batchId)
@@ -369,22 +347,13 @@ async def get_mentor_report(
     critical_count = 0
     
     for team in teams:
-        # Get project analysis
-        project = None
-        if team.get("projects"):
-            if isinstance(team["projects"], list):
-                project = team["projects"][0] if team["projects"] else None
-            else:
-                project = team["projects"]
-        
-        analysis_result = {}
-        if project:
-            analysis_result = project.get("analysis_result", {})
-            if isinstance(analysis_result, str):
-                try:
-                    analysis_result = json.loads(analysis_result)
-                except:
-                    analysis_result = {}
+        # Projects table has been dropped - analysis data is now in teams table
+        analysis_result = team.get("analysis_result", {})
+        if isinstance(analysis_result, str):
+            try:
+                analysis_result = json.loads(analysis_result)
+            except:
+                analysis_result = {}
         
         total_score = analysis_result.get("totalScore", 0)
         if total_score > 0:
@@ -406,7 +375,7 @@ async def get_mentor_report(
             "qualityScore": analysis_result.get("qualityScore", 0),
             "securityScore": analysis_result.get("securityScore", 0),
             "healthStatus": health_status,
-            "lastAnalyzed": project.get("created_at") if project else None
+            "lastAnalyzed": team.get("last_analyzed_at")
         })
     
     # Calculate summary
@@ -461,8 +430,8 @@ async def get_team_report(
     
     supabase = get_supabase()
     
-    # Get team with project data in single query
-    team_response = supabase.table("teams").select("*, projects!projects_teams_fk(*)").eq("id", teamId).execute()
+    # Get team data (projects table has been dropped - all analysis data is now in teams table)
+    team_response = supabase.table("teams").select("*").eq("id", teamId).execute()
     if not team_response.data:
         raise HTTPException(status_code=404, detail="Team not found")
     
@@ -478,15 +447,10 @@ async def get_team_report(
             detail="Access denied. You can only view reports for teams assigned to you."
         )
     
-    # Get project analysis
-    project = None
-    if team.get("projects"):
-        if isinstance(team["projects"], list):
-            project = team["projects"][0] if team["projects"] else None
-        else:
-            project = team["projects"]
+    # Projects table has been dropped - check if team has been analyzed
+    analysis_result = team.get("analysis_result")
     
-    if not project:
+    if not analysis_result:
         # Return basic team info if not analyzed
         return {
             "teamId": teamId,
@@ -518,8 +482,8 @@ async def get_team_report(
             "lastAnalyzedAt": None
         }
     
-    # Project data already fetched in single query above
-    analysis_result = project.get("analysis_result", {})
+    # Parse analysis result from teams table
+    analysis_result = team.get("analysis_result", {})
     
     if isinstance(analysis_result, str):
         try:
@@ -577,7 +541,7 @@ async def get_team_report(
         },
         "healthStatus": team.get("health_status", "on_track"),
         "riskFlags": team.get("risk_flags", []),
-        "lastAnalyzedAt": project.get("created_at")
+        "lastAnalyzedAt": team.get("last_analyzed_at")
     }
     
     # Handle PDF format

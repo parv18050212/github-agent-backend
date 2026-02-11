@@ -27,9 +27,10 @@ async def get_job_realtime_status(
     """
     supabase = get_supabase_admin_client()
     
-    # Get job from database
+    # Get job from database (projects table has been dropped)
+    # team_id is now directly in analysis_jobs table
     job_response = supabase.table("analysis_jobs").select(
-        "*, projects!inner(team_id, batch_id)"
+        "*, teams!inner(id, batch_id)"
     ).eq("id", job_id).execute()
     
     if not job_response.data:
@@ -69,12 +70,13 @@ async def get_job_realtime_status(
         except Exception as e:
             print(f"[WARNING] Failed to get Celery status for task {celery_task_id}: {e}")
     
-    # Build response
+    # Build response (projects table has been dropped)
+    teams_data = job.get("teams", {})
     response = {
         "jobId": job_id,
-        "projectId": str(job["project_id"]),
-        "teamId": str(job["projects"]["team_id"]) if job.get("projects") else None,
-        "batchId": str(job["projects"]["batch_id"]) if job.get("projects") else None,
+        "projectId": str(job["team_id"]),  # For backward compatibility
+        "teamId": str(job["team_id"]),
+        "batchId": str(teams_data.get("batch_id")) if teams_data else None,
         "status": job["status"],
         "progress": job.get("progress", 0),
         "currentStage": job.get("current_stage"),
@@ -108,10 +110,10 @@ async def websocket_job_status(
     
     try:
         while True:
-            # Get current status
+            # Get current status (projects table has been dropped)
             supabase = get_supabase_admin_client()
             job_response = supabase.table("analysis_jobs").select(
-                "*, projects!inner(team_id)"
+                "*, teams!inner(id)"
             ).eq("id", job_id).execute()
             
             if not job_response.data:
@@ -181,9 +183,9 @@ async def get_batch_analysis_progress(
     
     run = batch_run.data[0]
     
-    # Get team-level job statuses
+    # Get team-level job statuses (projects table has been dropped)
     jobs = supabase.table("analysis_jobs").select(
-        "id, project_id, status, progress, current_stage, metadata, projects!inner(team_id, teams!inner(team_name))"
+        "id, team_id, status, progress, current_stage, metadata, teams!inner(team_name)"
     ).eq("batch_id", batch_id).eq("run_number", run["run_number"]).execute()
     
     # Count statuses
@@ -192,16 +194,16 @@ async def get_batch_analysis_progress(
     failed = sum(1 for j in jobs.data if j["status"] == "failed") if jobs.data else run["failed_teams"]
     running = sum(1 for j in jobs.data if j["status"] in ["pending", "running"]) if jobs.data else 0
     
-    # Get currently running teams
+    # Get currently running teams (projects table has been dropped)
     running_teams = []
     if jobs.data:
         for job in jobs.data:
             if job["status"] in ["pending", "running"]:
-                team = job.get("projects", {}).get("teams", {})
+                teams_data = job.get("teams", {})
                 running_teams.append({
                     "jobId": job["id"],
-                    "teamId": str(job["projects"]["team_id"]),
-                    "teamName": team.get("team_name", "Unknown"),
+                    "teamId": str(job["team_id"]),
+                    "teamName": teams_data.get("team_name", "Unknown") if teams_data else "Unknown",
                     "status": job["status"],
                     "progress": job.get("progress", 0),
                     "stage": job.get("current_stage"),
