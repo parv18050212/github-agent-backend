@@ -270,11 +270,27 @@ def process_batch_sequential(self, batch_id: str, repos: List[Dict[str, str]]):
         'batch_id': batch_id,
         'total': len(repos),
         'queued': 0,
-        'failed': 0
+        'failed': 0,
+        'paused': False
     }
     
     try:
+        supabase = get_supabase_admin_client()
+        
         for i, repo in enumerate(repos):
+            # Check if batch analysis has been paused
+            runs_response = supabase.table("batch_analysis_runs")\
+                .select("status")\
+                .eq("batch_id", batch_id)\
+                .order("run_number", desc=True)\
+                .limit(1)\
+                .execute()
+            
+            if runs_response.data and runs_response.data[0].get("status") == "paused":
+                logger.info(f"⏸️  Batch analysis paused. Stopping after {i} repos.")
+                results['paused'] = True
+                break
+            
             current_index = i + 1
             team_name = repo.get("team_name", f"Repo {current_index}")
             repo_url = repo.get("repo_url", "")
@@ -301,7 +317,10 @@ def process_batch_sequential(self, batch_id: str, repos: List[Dict[str, str]]):
                 logger.info(f"    ⏳ Waiting 2 seconds...")
                 time.sleep(2)
         
-        logger.info(f"✅ Batch queuing completed: {results['queued']} queued, {results['failed']} failed to queue")
+        if results['paused']:
+            logger.info(f"⏸️  Batch paused: {results['queued']} queued before pause, {results['failed']} failed to queue")
+        else:
+            logger.info(f"✅ Batch queuing completed: {results['queued']} queued, {results['failed']} failed to queue")
         
         return results
         
@@ -309,6 +328,29 @@ def process_batch_sequential(self, batch_id: str, repos: List[Dict[str, str]]):
         logger.error(f"Batch processing failed: {exc}")
         logger.error(traceback.format_exc())
         raise
+
+
+@celery_app.task(bind=True)
+def resume_batch_analysis_task(self, batch_id: str, run_id: str, repos: List[Dict[str, str]]):
+    """
+    Resume a paused batch analysis
+    
+    Args:
+        batch_id: Batch UUID as string
+        run_id: Batch analysis run ID
+        repos: List of remaining repos to process
+    
+    Returns:
+        dict: Batch processing summary
+    """
+    logger.info(f"{'='*60}")
+    logger.info(f"▶️  Resuming Batch Analysis: {len(repos)} remaining repos")
+    logger.info(f"   Batch ID: {batch_id}")
+    logger.info(f"   Run ID: {run_id}")
+    logger.info(f"{'='*60}")
+    
+    # Use the same sequential processing logic
+    return process_batch_sequential(batch_id, repos)
 
 
 @celery_app.task
@@ -548,6 +590,159 @@ def send_completion_notification(results: dict):
     # )
     
     return {'notification_sent': True, 'method': 'console_log'}
+
+
+@celery_app.task
+def auto_resume_paused_batches():
+    """
+    Automatically resume paused batch analyses
+    Scheduled to run every Monday at 9:05 AM IST via Celery Beat
+    
+    This ensures that if an admin paused a batch and forgot to resume it,
+    it will automatically resume during the next weekly analysis cycle.
+    
+    Returns:
+        dict: Summary of batches resumed
+    """
+    logger.info("="*60)
+    logger.info("▶️  Auto-resuming paused batch analyses")
+    logger.info("="*60)
+    
+    try:
+        supabase = get_supabase_admin_client()
+        
+        # Get all paused batch analysis runs
+        paused_runs = supabase.table('batch_analysis_runs')\
+            .select('id, batch_id, run_number, batches(name, semester, year)')\
+            .eq('status', 'paused')\
+            .execute()
+        
+        if not paused_runs.data:
+            logger.info("No paused batch analyses found")
+            return {'total_paused': 0, 'resumed': 0}
+        
+        results = {
+            'total_paused': len(paused_runs.data),
+            'resumed': 0,
+            'failed': 0,
+            'batch_details': []
+        }
+        
+        for run in paused_runs.data:
+            run_id = run['id']
+            batch_id = run['batch_id']
+            run_number = run['run_number']
+            batch_info = run.get('batches', {})
+            batch_name = f"{batch_info.get('semester', 'Unknown')} {batch_info.get('year', '')}"
+            
+            logger.info(f"📦 Resuming: {batch_name} (Run #{run_number})")
+            
+            try:
+                # Get all teams that haven't been analyzed yet in this run
+                teams_result = supabase.table("teams")\
+                    .select("id, team_name, repo_url")\
+                    .eq("batch_id", batch_id)\
+                    .execute()
+                
+                teams = teams_result.data or []
+                
+                # Get jobs that are already completed/failed in this run
+                jobs_result = supabase.table("analysis_jobs")\
+                    .select("team_id, status")\
+                    .eq("metadata->>batch_run_id", run_id)\
+                    .execute()
+                
+                completed_team_ids = set(
+                    job["team_id"] for job in (jobs_result.data or [])
+                    if job["status"] in ["completed", "failed", "cancelled"]
+                )
+                
+                # Build list of remaining repos to process
+                repos = []
+                for team in teams:
+                    if team["id"] not in completed_team_ids and team.get("repo_url"):
+                        # Create new analysis job for this team
+                        job_insert = {
+                            "team_id": team["id"],
+                            "status": "queued",
+                            "started_at": datetime.now().isoformat(),
+                            "metadata": {
+                                "batch_run_id": run_id,
+                                "run_number": run_number,
+                                "auto_resumed": True
+                            }
+                        }
+                        
+                        job_result = supabase.table("analysis_jobs").insert(job_insert).execute()
+                        job_id = job_result.data[0]["id"]
+                        
+                        repos.append({
+                            "team_id": team["id"],
+                            "job_id": job_id,
+                            "repo_url": team["repo_url"],
+                            "team_name": team["team_name"]
+                        })
+                
+                if not repos:
+                    # No remaining repos to process - mark as completed
+                    supabase.table("batch_analysis_runs").update({
+                        "status": "completed",
+                        "completed_at": datetime.now().isoformat()
+                    }).eq("id", run_id).execute()
+                    
+                    logger.info(f"  ✅ No remaining repos - marked as completed")
+                    results['resumed'] += 1
+                    results['batch_details'].append({
+                        'batch': batch_name,
+                        'run_number': run_number,
+                        'remaining_repos': 0,
+                        'status': 'completed'
+                    })
+                else:
+                    # Update run status to running
+                    supabase.table("batch_analysis_runs").update({
+                        "status": "running",
+                        "metadata": {
+                            "auto_resumed_at": datetime.now().isoformat(),
+                            "auto_resumed": True
+                        }
+                    }).eq("id", run_id).execute()
+                    
+                    # Queue Celery task to process remaining repos
+                    task = resume_batch_analysis_task.delay(batch_id, run_id, repos)
+                    
+                    # Store Celery task ID
+                    supabase.table("batch_analysis_runs").update({
+                        "metadata": {
+                            "celery_task_id": task.id,
+                            "auto_resumed_at": datetime.now().isoformat(),
+                            "auto_resumed": True
+                        }
+                    }).eq("id", run_id).execute()
+                    
+                    logger.info(f"  ✅ Resumed with {len(repos)} remaining repos")
+                    results['resumed'] += 1
+                    results['batch_details'].append({
+                        'batch': batch_name,
+                        'run_number': run_number,
+                        'remaining_repos': len(repos),
+                        'status': 'resumed'
+                    })
+                    
+            except Exception as e:
+                logger.error(f"  ❌ Failed to resume {batch_name}: {e}")
+                results['failed'] += 1
+        
+        logger.info("="*60)
+        logger.info(f"✅ Auto-resume complete: {results['resumed']} batches resumed")
+        logger.info("="*60)
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Auto-resume failed: {e}")
+        logger.error(traceback.format_exc())
+        return {'error': str(e)}
 
 
 @celery_app.task

@@ -655,6 +655,7 @@ class TeamCRUD:
         cache_key = f"hackeval:mentor:team_ids:{mentor_id}"
         cached_ids = cache.get(cache_key)
         if cached_ids:
+            print(f"[TeamCRUD] Returning cached team IDs for mentor {mentor_id}: {cached_ids}")
             return cached_ids
 
         supabase = get_supabase_client()
@@ -664,7 +665,9 @@ class TeamCRUD:
         try:
             t_direct = supabase.table("teams").select("id").eq("mentor_id", mentor_id).execute()
             if t_direct.data:
-                team_ids.update([t["id"] for t in t_direct.data])
+                direct_ids = [t["id"] for t in t_direct.data]
+                team_ids.update(direct_ids)
+                print(f"[TeamCRUD] Found {len(direct_ids)} teams via teams.mentor_id for mentor {mentor_id}")
         except Exception as e:
             print(f"[TeamCRUD] Warning fetching direct mentor teams: {e}")
 
@@ -672,11 +675,14 @@ class TeamCRUD:
         try:
             assignments = supabase.table("mentor_team_assignments").select("team_id").eq("mentor_id", str(mentor_id)).execute()
             if assignments.data:
-                team_ids.update([a["team_id"] for a in assignments.data])
+                assignment_ids = [a["team_id"] for a in assignments.data]
+                team_ids.update(assignment_ids)
+                print(f"[TeamCRUD] Found {len(assignment_ids)} teams via mentor_team_assignments for mentor {mentor_id}")
         except Exception as e:
             print(f"[TeamCRUD] Warning fetching mentor assignments: {e}")
             
         team_id_list = list(team_ids)
+        print(f"[TeamCRUD] Total unique team IDs for mentor {mentor_id}: {len(team_id_list)}")
         cache.set(cache_key, team_id_list, RedisCache.TTL_SHORT)
         return team_id_list
 

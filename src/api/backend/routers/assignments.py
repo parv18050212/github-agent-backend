@@ -15,6 +15,7 @@ from ..schemas import (
 )
 from ..middleware import get_current_user, RoleChecker, AuthUser
 from ..database import get_supabase_admin_client
+from ..utils.cache import cache
 
 router = APIRouter(prefix="/api/assignments", tags=["Assignments"])
 
@@ -94,6 +95,20 @@ async def assign_teams(
                     "assigned_at": assignment["assigned_at"]
                 })
     
+    # Clear mentor's cache so dashboard updates immediately
+    mentor_id_str = str(assignment_data.mentor_id)
+    cache_keys_to_clear = [
+        f"hackeval:mentor:team_ids:{mentor_id_str}",
+        f"hackeval:mentor:dashboard:{mentor_id_str}",
+        f"hackeval:mentor:reports:{mentor_id_str}:all"
+    ]
+    for key in cache_keys_to_clear:
+        try:
+            cache.delete(key)
+            print(f"[Assignments] Cleared cache key: {key}")
+        except Exception as e:
+            print(f"[Assignments] Failed to clear cache key {key}: {e}")
+    
     return AssignmentResponse(
         success=True,
         message=f"{len(assignment_data.team_ids)} teams assigned to {mentor.get('full_name', mentor['email'])}",
@@ -135,6 +150,20 @@ async def unassign_teams(
         supabase.table("mentor_team_assignments").delete().eq(
             "mentor_id", str(assignment_data.mentor_id)
         ).eq("team_id", team_id).execute()
+    
+    # Clear mentor's cache so dashboard updates immediately
+    mentor_id_str = str(assignment_data.mentor_id)
+    cache_keys_to_clear = [
+        f"hackeval:mentor:team_ids:{mentor_id_str}",
+        f"hackeval:mentor:dashboard:{mentor_id_str}",
+        f"hackeval:mentor:reports:{mentor_id_str}:all"
+    ]
+    for key in cache_keys_to_clear:
+        try:
+            cache.delete(key)
+            print(f"[Assignments] Cleared cache key: {key}")
+        except Exception as e:
+            print(f"[Assignments] Failed to clear cache key {key}: {e}")
     
     return MessageResponse(
         success=True,

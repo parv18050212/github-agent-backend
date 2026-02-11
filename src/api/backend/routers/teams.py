@@ -184,7 +184,8 @@ async def list_teams(
     if batch_id:
         count_query = count_query.eq("batch_id", str(batch_id))
     if mentor_id:
-        count_query = count_query.in_("id", mentor_team_ids)
+        # Use the same filter as the main query
+        count_query = count_query.eq("mentor_id", str(mentor_id))
     if status:
         count_query = count_query.eq("status", status)
     if search:
@@ -230,6 +231,22 @@ async def list_teams(
 
     teams = response.data or []
     total = response.count if hasattr(response, "count") else len(teams)
+    
+    # Apply natural sorting for team_name if that's the sort field
+    # This ensures "Team 1", "Team 2", ..., "Team 10" sort correctly
+    if sort_field in ["team_name", "-team_name"]:
+        import re
+        def natural_sort_key(team):
+            """Extract numbers from team_name for natural sorting"""
+            name = team.get("team_name", "")
+            # Extract all numbers from the string
+            numbers = re.findall(r'\d+', name)
+            if numbers:
+                # Convert first number to int for sorting, keep rest of string
+                return (int(numbers[0]), name)
+            return (float('inf'), name)  # Teams without numbers go to end
+        
+        teams.sort(key=natural_sort_key, reverse=sort_field.startswith("-"))
 
     batch_ids = [team.get("batch_id") for team in teams if team.get("batch_id")]
 

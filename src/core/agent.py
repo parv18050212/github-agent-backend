@@ -269,25 +269,45 @@ def node_aggregator(ctx):
     overall_ai_percentage = round(sum(all_ai_scores) / len(all_ai_scores), 2) if all_ai_scores else 0.0
     top_ai = max(all_ai_scores) if all_ai_scores else 0.0
     
-    # --- Scores ---
-    # Use reasonable defaults (50 = neutral) instead of 0 when data is missing
-    impl_score = judge.get("implementation_score", 50)  # 50 is neutral if AI fails
+    # --- Check for empty repository ---
+    total_commits = comm.get("commits", 0)
+    total_files = len(files)
     
-    # Calculate Effort based on Relevance Score (capped at 100)
-    # Target: 50 relevance points = 100 score (approx 20 meaningful commits)
-    relevance = comm.get("total_relevance", 0)
-    effort_score = min(100, relevance * 2) 
+    # If repo has 0 commits or very few files (< 3), consider it empty
+    is_empty_repo = total_commits == 0 or total_files < 3
     
-    scores = {
-        "originality": max(0, 100 - top_ai),
-        "quality": qual.get("maintainability_index", 50),  # 50 if no Python files
-        "security": sec.get("score", 100),  # 100 if no scan done (assume safe)
-        "effort": effort_score,
-        "implementation": impl_score,
-        "engineering": mat.get("score", 20),  # 20 base even without devops
-        "organization": struct.get("organization_score", 50),  # 50 if not analyzed
-        "documentation": qual.get("documentation_score", 30)  # 30 base score
-    }
+    if is_empty_repo:
+        print("⚠️  Empty repository detected (0 commits or < 3 files). Setting all scores to 0.")
+        scores = {
+            "originality": 0,
+            "quality": 0,
+            "security": 0,
+            "effort": 0,
+            "implementation": 0,
+            "engineering": 0,
+            "organization": 0,
+            "documentation": 0
+        }
+    else:
+        # --- Scores ---
+        # Use reasonable defaults (50 = neutral) instead of 0 when data is missing
+        impl_score = judge.get("implementation_score", 50)  # 50 is neutral if AI fails
+        
+        # Calculate Effort based on Relevance Score (capped at 100)
+        # Target: 50 relevance points = 100 score (approx 20 meaningful commits)
+        relevance = comm.get("total_relevance", 0)
+        effort_score = min(100, relevance * 2) 
+        
+        scores = {
+            "originality": max(0, 100 - top_ai),
+            "quality": qual.get("maintainability_index", 50),  # 50 if no Python files
+            "security": sec.get("score", 100),  # 100 if no scan done (assume safe)
+            "effort": effort_score,
+            "implementation": impl_score,
+            "engineering": mat.get("score", 20),  # 20 base even without devops
+            "organization": struct.get("organization_score", 50),  # 50 if not analyzed
+            "documentation": qual.get("documentation_score", 30)  # 30 base score
+        }
 
     # Apply a hard penalty for docs-only repositories (README-only, no code)
     def _is_docs_only_repo(path: str) -> bool:

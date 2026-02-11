@@ -832,6 +832,247 @@ async def cancel_batch_analysis(
         )
 
 
+@router.post(
+    "/{batch_id}/pause",
+    dependencies=[Depends(RoleChecker(["admin"]))]
+)
+async def pause_batch_analysis(
+    batch_id: UUID,
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Gracefully pause batch analysis after current repository completes (Admin only)
+    
+    This will:
+    - Mark the batch analysis run as "paused"
+    - Allow the current repository analysis to complete
+    - Stop queuing new repositories
+    - Can be resumed later with /resume endpoint
+    
+    **Permissions:** Admin only
+    """
+    try:
+        supabase = get_supabase_admin_client()
+        
+        # Check if batch exists
+        batch_result = supabase.table("batches")\
+            .select("id, name")\
+            .eq("id", str(batch_id))\
+            .execute()
+        
+        if not batch_result.data or len(batch_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Batch not found"
+            )
+        
+        batch_name = batch_result.data[0].get("name", "Unknown")
+        
+        # Get the most recent running batch analysis run
+        runs_response = supabase.table("batch_analysis_runs")\
+            .select("id, run_number, status")\
+            .eq("batch_id", str(batch_id))\
+            .in_("status", ["pending", "running"])\
+            .order("run_number", desc=True)\
+            .limit(1)\
+            .execute()
+        
+        if not runs_response.data or len(runs_response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active batch analysis run to pause"
+            )
+        
+        run = runs_response.data[0]
+        run_id = run["id"]
+        
+        # Update run status to paused
+        supabase.table("batch_analysis_runs").update({
+            "status": "paused",
+            "metadata": {
+                "paused_at": datetime.now().isoformat(),
+                "paused_by": current_user.email
+            }
+        }).eq("id", run_id).execute()
+        
+        return {
+            "message": f"Batch analysis paused for: {batch_name}",
+            "run_id": run_id,
+            "run_number": run["run_number"],
+            "note": "Current repository will complete. Analysis will stop after that.",
+            "batch_id": str(batch_id)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to pause batch analysis: {str(e)}"
+        )
+
+
+@router.post(
+    "/{batch_id}/resume",
+    dependencies=[Depends(RoleChecker(["admin"]))]
+)
+async def resume_batch_analysis(
+    batch_id: UUID,
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Resume a paused batch analysis (Admin only)
+    
+    This will:
+    - Resume the paused batch analysis run
+    - Continue processing remaining repositories
+    
+    **Permissions:** Admin only
+    """
+    try:
+        # Import Celery task
+        try:
+            from celery_worker import resume_batch_analysis_task
+            CELERY_ENABLED = True
+        except ImportError:
+            CELERY_ENABLED = False
+        
+        supabase = get_supabase_admin_client()
+        
+        # Check if batch exists
+        batch_result = supabase.table("batches")\
+            .select("id, name")\
+            .eq("id", str(batch_id))\
+            .execute()
+        
+        if not batch_result.data or len(batch_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Batch not found"
+            )
+        
+        batch_name = batch_result.data[0].get("name", "Unknown")
+        
+        # Get the most recent paused batch analysis run
+        runs_response = supabase.table("batch_analysis_runs")\
+            .select("id, run_number, metadata")\
+            .eq("batch_id", str(batch_id))\
+            .eq("status", "paused")\
+            .order("run_number", desc=True)\
+            .limit(1)\
+            .execute()
+        
+        if not runs_response.data or len(runs_response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No paused batch analysis run to resume"
+            )
+        
+        run = runs_response.data[0]
+        run_id = run["id"]
+        
+        # Get all teams that haven't been analyzed yet in this run
+        teams_result = supabase.table("teams")\
+            .select("id, team_name, repo_url")\
+            .eq("batch_id", str(batch_id))\
+            .execute()
+        
+        teams = teams_result.data or []
+        
+        # Get jobs that are already completed/failed in this run
+        jobs_result = supabase.table("analysis_jobs")\
+            .select("team_id, status")\
+            .eq("metadata->>batch_run_id", run_id)\
+            .execute()
+        
+        completed_team_ids = set(
+            job["team_id"] for job in (jobs_result.data or [])
+            if job["status"] in ["completed", "failed", "cancelled"]
+        )
+        
+        # Build list of remaining repos to process
+        repos = []
+        for team in teams:
+            if team["id"] not in completed_team_ids and team.get("repo_url"):
+                # Create new analysis job for this team
+                job_insert = {
+                    "team_id": team["id"],
+                    "status": "queued",
+                    "requested_by": str(current_user.user_id),
+                    "started_at": datetime.now().isoformat(),
+                    "metadata": {
+                        "batch_run_id": run_id,
+                        "run_number": run["run_number"],
+                        "resumed": True
+                    }
+                }
+                
+                job_result = supabase.table("analysis_jobs").insert(job_insert).execute()
+                job_id = job_result.data[0]["id"]
+                
+                repos.append({
+                    "team_id": team["id"],
+                    "job_id": job_id,
+                    "repo_url": team["repo_url"],
+                    "team_name": team["team_name"]
+                })
+        
+        if not repos:
+            # No remaining repos to process
+            supabase.table("batch_analysis_runs").update({
+                "status": "completed",
+                "completed_at": datetime.now().isoformat()
+            }).eq("id", run_id).execute()
+            
+            return {
+                "message": f"No remaining repositories to process for: {batch_name}",
+                "run_id": run_id,
+                "batch_id": str(batch_id)
+            }
+        
+        # Update run status to running
+        supabase.table("batch_analysis_runs").update({
+            "status": "running",
+            "metadata": {
+                **run.get("metadata", {}),
+                "resumed_at": datetime.now().isoformat(),
+                "resumed_by": current_user.email
+            }
+        }).eq("id", run_id).execute()
+        
+        # Queue Celery task to process remaining repos
+        if CELERY_ENABLED:
+            try:
+                task = resume_batch_analysis_task.delay(str(batch_id), run_id, repos)
+                # Store Celery task ID
+                supabase.table("batch_analysis_runs").update({
+                    "metadata": {
+                        **run.get("metadata", {}),
+                        "celery_task_id": task.id,
+                        "resumed_at": datetime.now().isoformat(),
+                        "resumed_by": current_user.email
+                    }
+                }).eq("id", run_id).execute()
+            except Exception as celery_error:
+                print(f"⚠ Celery queueing failed: {celery_error}")
+        
+        return {
+            "message": f"Batch analysis resumed for: {batch_name}",
+            "run_id": run_id,
+            "run_number": run["run_number"],
+            "remaining_repos": len(repos),
+            "batch_id": str(batch_id)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to resume batch analysis: {str(e)}"
+        )
+
+
 @router.delete(
     "/{batch_id}",
     status_code=status.HTTP_204_NO_CONTENT,

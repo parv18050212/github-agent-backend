@@ -79,6 +79,12 @@ celery_app.conf.beat_schedule = {
         'args': (False,),  # force=False (respect 7-day interval)
     },
     
+    # Auto-resume paused batches - Every Monday at 9:05 AM IST (5 minutes after weekly analysis)
+    'auto-resume-paused-batches': {
+        'task': 'celery_worker.auto_resume_paused_batches',
+        'schedule': crontab(day_of_week=1, hour=9, minute=5),
+    },
+    
     # Retry DLQ jobs - Every night at 2 AM IST
     'retry-dlq-nightly': {
         'task': 'celery_worker.retry_dlq_jobs',

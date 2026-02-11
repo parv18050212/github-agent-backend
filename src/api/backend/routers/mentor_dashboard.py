@@ -42,7 +42,8 @@ def require_mentor(current_user: AuthUser = Depends(get_current_user)) -> AuthUs
 
 @router.get("/dashboard")
 async def get_mentor_dashboard(
-    current_user: AuthUser = Depends(require_mentor)
+    current_user: AuthUser = Depends(require_mentor),
+    no_cache: bool = Query(False, description="Bypass cache")
 ):
     """
     Get mentor's dashboard summary.
@@ -52,16 +53,22 @@ async def get_mentor_dashboard(
     supabase = get_supabase()
     mentor_id = str(current_user.user_id)
 
+    print(f"[Mentor Dashboard] /dashboard called for mentor_id={mentor_id}, email={current_user.email}")
+
     cache_key = f"hackeval:mentor:dashboard:{mentor_id}"
-    cached_response = cache.get(cache_key)
-    if cached_response:
-        return cached_response
+    if not no_cache:
+        cached_response = cache.get(cache_key)
+        if cached_response:
+            print(f"[Mentor Dashboard] Returning cached response")
+            return cached_response
     
     # Get assigned team IDs
     team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
+    print(f"[Mentor Dashboard] Found {len(team_ids)} team IDs: {team_ids}")
     
     if not team_ids:
-        return {
+        print(f"[Mentor Dashboard] No teams found for mentor {mentor_id}")
+        empty_response = {
             "totalTeams": 0,
             "teamsOnTrack": 0,
             "teamsAtRisk": 0,
@@ -69,6 +76,8 @@ async def get_mentor_dashboard(
             "averageScore": 0,
             "recentActivity": []
         }
+        print(f"[Mentor Dashboard] Returning empty response: {empty_response}")
+        return empty_response
     
     # Fetch teams data directly (no more project joins)
     teams_response = supabase.table("teams").select(
@@ -200,6 +209,7 @@ async def get_mentor_leaderboard(
 @router.get("/reports")
 async def get_mentor_reports(
     batch_id: Optional[str] = Query(None, description="Filter by batch ID"),
+    no_cache: bool = Query(False, description="Bypass cache"),
     current_user: AuthUser = Depends(require_mentor)
 ):
     """
@@ -209,15 +219,21 @@ async def get_mentor_reports(
     supabase = get_supabase()
     mentor_id = str(current_user.user_id)
 
+    print(f"[Mentor Dashboard] /reports called for mentor_id={mentor_id}, email={current_user.email}, batch_id={batch_id}")
+
     cache_key = f"hackeval:mentor:reports:{mentor_id}:{batch_id or 'all'}"
-    cached_response = cache.get(cache_key)
-    if cached_response:
-        return cached_response
+    if not no_cache:
+        cached_response = cache.get(cache_key)
+        if cached_response:
+            print(f"[Mentor Dashboard] Returning cached response")
+            return cached_response
     
     # Get assigned team IDs
     team_ids = TeamCRUD.get_mentor_team_ids(mentor_id)
+    print(f"[Mentor Dashboard] Found {len(team_ids)} team IDs: {team_ids}")
     
     if not team_ids:
+        print(f"[Mentor Dashboard] No teams found for mentor {mentor_id}")
         return {
             "mentorId": mentor_id,
             "generatedAt": datetime.utcnow().isoformat(),
@@ -383,6 +399,98 @@ async def get_mentor_team_report(
     cache.set(cache_key, response, RedisCache.TTL_SHORT)
     print(f"[Mentor Dashboard] /teams/{team_id}/report completed in {perf_counter() - start_time:.3f}s")
     return response
+
+
+@router.post("/cache/clear")
+async def clear_mentor_cache(
+    current_user: AuthUser = Depends(require_mentor)
+):
+    """
+    Clear all cache entries for the current mentor.
+    Useful for debugging or forcing fresh data.
+    """
+    mentor_id = str(current_user.user_id)
+    
+    # Clear all mentor-related cache keys
+    cache_keys = [
+        f"hackeval:mentor:dashboard:{mentor_id}",
+        f"hackeval:mentor:reports:{mentor_id}:all",
+        f"hackeval:mentor:team_ids:{mentor_id}",
+    ]
+    
+    cleared_count = 0
+    for key in cache_keys:
+        try:
+            cache.delete(key)
+            cleared_count += 1
+        except Exception as e:
+            print(f"[Mentor Dashboard] Failed to clear cache key {key}: {e}")
+    
+    print(f"[Mentor Dashboard] Cleared {cleared_count} cache entries for mentor {mentor_id}")
+    
+    return {
+        "success": True,
+        "message": f"Cleared {cleared_count} cache entries",
+        "mentor_id": mentor_id
+    }
+
+
+@router.get("/debug/info")
+async def get_mentor_debug_info(
+    current_user: AuthUser = Depends(require_mentor)
+):
+    """
+    Get debug information for the current mentor.
+    Shows user info, team assignments, and cache status.
+    """
+    mentor_id = str(current_user.user_id)
+    supabase = get_supabase()
+    
+    # Get team IDs (bypassing cache)
+    team_ids_direct = []
+    team_ids_assignments = []
+    
+    try:
+        t_direct = supabase.table("teams").select("id, team_name").eq("mentor_id", mentor_id).execute()
+        team_ids_direct = t_direct.data or []
+    except Exception as e:
+        print(f"[Debug] Error fetching direct teams: {e}")
+    
+    try:
+        assignments = supabase.table("mentor_team_assignments").select("team_id, teams(id, team_name)").eq("mentor_id", mentor_id).execute()
+        team_ids_assignments = assignments.data or []
+    except Exception as e:
+        print(f"[Debug] Error fetching assignments: {e}")
+    
+    # Get cached team IDs
+    cache_key = f"hackeval:mentor:team_ids:{mentor_id}"
+    cached_team_ids = cache.get(cache_key)
+    
+    return {
+        "user": {
+            "id": mentor_id,
+            "email": current_user.email,
+            "role": current_user.role,
+            "full_name": current_user.full_name
+        },
+        "teams_via_direct_column": {
+            "count": len(team_ids_direct),
+            "teams": team_ids_direct
+        },
+        "teams_via_assignments": {
+            "count": len(team_ids_assignments),
+            "assignments": team_ids_assignments
+        },
+        "cached_team_ids": {
+            "exists": cached_team_ids is not None,
+            "count": len(cached_team_ids) if cached_team_ids else 0,
+            "ids": cached_team_ids
+        },
+        "total_unique_teams": len(set(
+            [t["id"] for t in team_ids_direct] +
+            [a["team_id"] for a in team_ids_assignments]
+        ))
+    }
 
 
 # Grading schemas

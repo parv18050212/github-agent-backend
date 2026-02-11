@@ -100,6 +100,8 @@ async def get_current_user(
                     admin_client.table("users").update(update_fields).eq("id", user_id).execute()
             else:
                 now_iso = datetime.utcnow().isoformat()
+                # Convert user.created_at to ISO string if it's a datetime object
+                created_at_iso = user.created_at.isoformat() if hasattr(user.created_at, 'isoformat') else (user.created_at or now_iso)
                 admin_client.table("users").insert({
                     "id": user_id,
                     "email": user.email,
@@ -107,7 +109,7 @@ async def get_current_user(
                     "role": desired_role,
                     "is_mentor": desired_is_mentor,
                     "status": "active",
-                    "created_at": user.created_at or now_iso
+                    "created_at": created_at_iso
                 }).execute()
         except Exception as sync_error:
             print(f"[Auth] Failed to sync users table: {sync_error}")
