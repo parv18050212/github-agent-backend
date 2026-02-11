@@ -177,6 +177,52 @@ async def list_teams(
     
     # Apply pagination
     offset = (page - 1) * page_size
+    
+    # Check if offset is beyond available data (prevents Supabase JSON generation error)
+    # Get count first to avoid querying invalid ranges
+    count_query = supabase.table("teams").select("id", count="exact")
+    if batch_id:
+        count_query = count_query.eq("batch_id", str(batch_id))
+    if mentor_id:
+        count_query = count_query.in_("id", mentor_team_ids)
+    if status:
+        count_query = count_query.eq("status", status)
+    if search:
+        if matching_team_ids:
+            count_query = count_query.in_("id", list(matching_team_ids))
+        else:
+            # No matches found in search
+            return TeamListResponse(
+                teams=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0
+            )
+    
+    count_result = count_query.execute()
+    total = count_result.count if hasattr(count_result, "count") else 0
+    
+    # If offset is beyond total, return empty result
+    if offset >= total and total > 0:
+        return TeamListResponse(
+            teams=[],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=(total + page_size - 1) // page_size
+        )
+    
+    # If no teams at all, return empty result
+    if total == 0:
+        return TeamListResponse(
+            teams=[],
+            total=0,
+            page=page,
+            page_size=page_size,
+            total_pages=0
+        )
+    
     query = query.range(offset, offset + page_size - 1)
     
     # Execute query
@@ -368,7 +414,17 @@ async def clear_all_teams(
 ):
     """
     Delete all teams and dependent data for a batch (admin only).
+    
+    This will:
+    - Cancel any running Celery analysis tasks
+    - Delete all teams in the batch
+    - Delete all related data (analysis jobs, snapshots, issues, etc.)
     """
+    try:
+        from celery_app import celery_app
+    except ImportError:
+        celery_app = None
+    
     supabase = get_supabase_admin_client()
 
     teams_response = supabase.table("teams").select("id").eq("batch_id", str(batch_id)).execute()
@@ -380,7 +436,26 @@ async def clear_all_teams(
     team_ids = [team.get("id") for team in teams_data if team.get("id")]
 
     if team_ids:
+        # Cancel all running Celery tasks for these teams
+        if celery_app:
+            jobs_response = supabase.table("analysis_jobs")\
+                .select("id, metadata")\
+                .in_("team_id", team_ids)\
+                .in_("status", ["queued", "running"])\
+                .execute()
+            
+            for job in (jobs_response.data or []):
+                metadata = job.get("metadata", {})
+                celery_task_id = metadata.get("celery_task_id")
+                
+                if celery_task_id:
+                    try:
+                        celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
+                    except Exception as e:
+                        print(f"Failed to revoke task {celery_task_id}: {e}")
+        
         # Delete related data (all tables now use team_id after migration)
+        # Order matters: delete child records before parent records
         supabase.table("analysis_jobs").delete().in_("team_id", team_ids).execute()
         supabase.table("analysis_snapshots").delete().in_("team_id", team_ids).execute()
         supabase.table("issues").delete().in_("team_id", team_ids).execute()
@@ -393,7 +468,7 @@ async def clear_all_teams(
     # Delete teams
     supabase.table("teams").delete().eq("batch_id", str(batch_id)).execute()
 
-    return MessageResponse(success=True, message="Deleted all teams for this batch")
+    return MessageResponse(success=True, message=f"Deleted {len(team_ids)} teams and all related data for this batch")
 
 
 @router.post("/{team_id}/assign", response_model=MessageResponse, dependencies=[Depends(RoleChecker(["admin"]))])

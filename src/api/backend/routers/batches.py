@@ -722,6 +722,122 @@ async def get_batch_progress(
         )
 
 
+@router.post(
+    "/{batch_id}/cancel",
+    dependencies=[Depends(RoleChecker(["admin"]))]
+)
+async def cancel_batch_analysis(
+    batch_id: UUID,
+    current_user: AuthUser = Depends(get_current_user)
+):
+    """
+    Cancel all running analysis tasks for a batch (Admin only)
+    
+    This will:
+    - Revoke all running Celery tasks for this batch
+    - Mark all queued/running jobs as cancelled
+    - Update batch analysis run status to cancelled
+    
+    **Permissions:** Admin only
+    """
+    try:
+        from celery_app import celery_app
+        
+        supabase = get_supabase_admin_client()
+        
+        # Check if batch exists
+        batch_result = supabase.table("batches")\
+            .select("id, name")\
+            .eq("id", str(batch_id))\
+            .execute()
+        
+        if not batch_result.data or len(batch_result.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Batch not found"
+            )
+        
+        batch_name = batch_result.data[0].get("name", "Unknown")
+        
+        # Get all running/queued analysis jobs for teams in this batch
+        teams_response = supabase.table("teams").select("id").eq("batch_id", str(batch_id)).execute()
+        team_ids = [t["id"] for t in (teams_response.data or [])]
+        
+        cancelled_count = 0
+        revoked_tasks = []
+        
+        if team_ids:
+            # Get all active jobs
+            jobs_response = supabase.table("analysis_jobs")\
+                .select("id, metadata")\
+                .in_("team_id", team_ids)\
+                .in_("status", ["queued", "running"])\
+                .execute()
+            
+            for job in (jobs_response.data or []):
+                job_id = job["id"]
+                metadata = job.get("metadata", {})
+                celery_task_id = metadata.get("celery_task_id")
+                
+                # Revoke Celery task if it exists
+                if celery_task_id:
+                    try:
+                        celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
+                        revoked_tasks.append(celery_task_id)
+                    except Exception as e:
+                        print(f"Failed to revoke task {celery_task_id}: {e}")
+                
+                # Update job status to cancelled
+                supabase.table("analysis_jobs").update({
+                    "status": "cancelled",
+                    "error_message": f"Cancelled by admin: {current_user.email}",
+                    "completed_at": datetime.now().isoformat()
+                }).eq("id", job_id).execute()
+                
+                cancelled_count += 1
+        
+        # Update batch analysis runs
+        runs_response = supabase.table("batch_analysis_runs")\
+            .select("id, metadata")\
+            .eq("batch_id", str(batch_id))\
+            .in_("status", ["pending", "running"])\
+            .execute()
+        
+        for run in (runs_response.data or []):
+            run_id = run["id"]
+            metadata = run.get("metadata", {})
+            celery_task_id = metadata.get("celery_task_id")
+            
+            # Revoke batch task if it exists
+            if celery_task_id:
+                try:
+                    celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
+                    revoked_tasks.append(celery_task_id)
+                except Exception as e:
+                    print(f"Failed to revoke batch task {celery_task_id}: {e}")
+            
+            # Update run status
+            supabase.table("batch_analysis_runs").update({
+                "status": "cancelled",
+                "completed_at": datetime.now().isoformat()
+            }).eq("id", run_id).execute()
+        
+        return {
+            "message": f"Cancelled analysis for batch: {batch_name}",
+            "cancelled_jobs": cancelled_count,
+            "revoked_celery_tasks": len(revoked_tasks),
+            "batch_id": str(batch_id)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel batch analysis: {str(e)}"
+        )
+
+
 @router.delete(
     "/{batch_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -734,11 +850,25 @@ async def delete_batch(
     """
     Delete batch (Admin only)
     
-    **Warning:** This will cascade delete all teams and students in the batch
+    **Warning:** This will CASCADE DELETE ALL related data:
+    - All teams in the batch
+    - All analysis jobs (including running jobs)
+    - All analysis snapshots
+    - All issues
+    - All tech stack entries
+    - All team members
+    - All project comments
+    - All mentor assignments
+    - All students
+    - All batch analysis runs
+    
+    **Note:** Running Celery tasks will be cancelled automatically
     
     **Permissions:** Admin only
     """
     try:
+        from celery_app import celery_app
+        
         supabase = get_supabase_admin_client()
         
         # Check if batch exists
@@ -753,25 +883,72 @@ async def delete_batch(
                 detail="Batch not found"
             )
         
-        # Cleanup related project data (projects are not cascaded by batch delete)
+        # Get all teams in this batch
         teams_response = supabase.table("teams").select("id").eq("batch_id", str(batch_id)).execute()
         teams_data = teams_response.data or []
-
         team_ids = [team.get("id") for team in teams_data if team.get("id")]
 
-        # Projects table has been dropped - all data is now in teams table
-        # team_ids are the same as old project_ids after migration
+        # Cancel all running Celery tasks for this batch
         if team_ids:
+            # Get all active jobs and cancel their Celery tasks
+            jobs_response = supabase.table("analysis_jobs")\
+                .select("id, metadata")\
+                .in_("team_id", team_ids)\
+                .in_("status", ["queued", "running"])\
+                .execute()
+            
+            for job in (jobs_response.data or []):
+                metadata = job.get("metadata", {})
+                celery_task_id = metadata.get("celery_task_id")
+                
+                if celery_task_id:
+                    try:
+                        celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
+                    except Exception as e:
+                        print(f"Failed to revoke task {celery_task_id}: {e}")
+        
+        # Cancel batch-level Celery tasks
+        runs_response = supabase.table("batch_analysis_runs")\
+            .select("id, metadata")\
+            .eq("batch_id", str(batch_id))\
+            .in_("status", ["pending", "running"])\
+            .execute()
+        
+        for run in (runs_response.data or []):
+            metadata = run.get("metadata", {})
+            celery_task_id = metadata.get("celery_task_id")
+            
+            if celery_task_id:
+                try:
+                    celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
+                except Exception as e:
+                    print(f"Failed to revoke batch task {celery_task_id}: {e}")
+
+        if team_ids:
+            # Delete all related data for these teams
+            # Order matters: delete child records before parent records
+            
+            # 1. Delete analysis-related data
             supabase.table("analysis_jobs").delete().in_("team_id", team_ids).execute()
             supabase.table("analysis_snapshots").delete().in_("team_id", team_ids).execute()
+            
+            # 2. Delete team-related data
             supabase.table("issues").delete().in_("team_id", team_ids).execute()
             supabase.table("project_comments").delete().in_("team_id", team_ids).execute()
             supabase.table("tech_stack").delete().in_("team_id", team_ids).execute()
             supabase.table("team_members").delete().in_("team_id", team_ids).execute()
+            
+            # 3. Delete assignments
             supabase.table("mentor_team_assignments").delete().in_("team_id", team_ids).execute()
             supabase.table("students").delete().in_("team_id", team_ids).execute()
-
-        # Delete batch (cascade will handle remaining team records)
+            
+            # 4. Delete teams themselves
+            supabase.table("teams").delete().in_("id", team_ids).execute()
+        
+        # Delete batch analysis runs
+        supabase.table("batch_analysis_runs").delete().eq("batch_id", str(batch_id)).execute()
+        
+        # Delete the batch itself
         supabase.table("batches").delete().eq("id", str(batch_id)).execute()
         
         return None

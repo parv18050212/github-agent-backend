@@ -213,6 +213,94 @@ async def analyze_repo(
         )
 
 
+@router.post(
+    "/cancel-analysis/{job_id}",
+    responses={404: {"model": ErrorResponse}}
+)
+async def cancel_analysis(job_id: UUID):
+    """
+    Cancel a running or queued analysis job
+    
+    This will:
+    - Revoke the Celery task if it's running
+    - Mark the job as cancelled in the database
+    - Update the team status back to pending
+    
+    **Parameters:**
+    - job_id: UUID of the analysis job to cancel
+    
+    **Returns:**
+    - Success message with cancellation details
+    """
+    try:
+        from celery_app import celery_app
+        from src.api.backend.database import get_supabase_admin_client
+        from src.api.backend.crud import TeamCRUD
+        
+        supabase = get_supabase_admin_client()
+        
+        # Get the job
+        job = AnalysisJobCRUD.get_job(job_id)
+        
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Analysis job {job_id} not found"
+            )
+        
+        job_status = job.get("status")
+        
+        # Check if job can be cancelled
+        if job_status not in ["queued", "running"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot cancel job with status: {job_status}. Only queued or running jobs can be cancelled."
+            )
+        
+        # Get Celery task ID from metadata
+        metadata = job.get("metadata", {})
+        celery_task_id = metadata.get("celery_task_id")
+        
+        revoked = False
+        if celery_task_id:
+            try:
+                # Revoke the Celery task (terminate=True kills the worker process)
+                celery_app.control.revoke(celery_task_id, terminate=True, signal='SIGKILL')
+                revoked = True
+            except Exception as e:
+                print(f"Failed to revoke Celery task {celery_task_id}: {e}")
+        
+        # Update job status to cancelled
+        supabase.table("analysis_jobs").update({
+            "status": "cancelled",
+            "error_message": "Cancelled by user",
+            "completed_at": datetime.now().isoformat()
+        }).eq("id", str(job_id)).execute()
+        
+        # Update team status back to pending
+        team_id = job.get("team_id")
+        if team_id:
+            try:
+                TeamCRUD.update_team_status(UUID(team_id), "pending")
+            except Exception as e:
+                print(f"Failed to update team status: {e}")
+        
+        return {
+            "message": "Analysis cancelled successfully",
+            "job_id": str(job_id),
+            "celery_task_revoked": revoked,
+            "previous_status": job_status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel analysis: {str(e)}"
+        )
+
+
 @router.get(
     "/analysis-status/{job_id}",
     response_model=AnalysisStatusResponse,
