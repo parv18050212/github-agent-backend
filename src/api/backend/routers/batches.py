@@ -501,8 +501,10 @@ async def trigger_batch_analysis(
                 job_id = job_result.data[0]["id"]
                 
                 # Update team status (projects table has been dropped)
+                # Note: 'queued' is not a valid status for teams table
+                # Valid statuses are: pending, analyzing, completed, failed
                 supabase.table("teams").update({
-                    "status": "queued"
+                    "status": "analyzing"
                 }).eq("id", team_id).execute()
                 
                 repos.append({

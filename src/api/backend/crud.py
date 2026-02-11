@@ -460,9 +460,9 @@ class BatchCRUD:
         
         data = {
             "status": "completed",
+            "completed_at": datetime.now().isoformat(),
             "current_repo_url": None,
-            "current_repo_team": None,
-            "completed_at": datetime.now().isoformat()
+            "current_repo_team": None
         }
         
         result = supabase.table("batches").update(data).eq("id", batch_id).execute()
@@ -475,8 +475,10 @@ class BatchCRUD:
         
         data = {
             "status": "failed",
+            "completed_at": datetime.now().isoformat(),
             "error_message": error_message,
-            "completed_at": datetime.now().isoformat()
+            "current_repo_url": None,
+            "current_repo_team": None
         }
         
         result = supabase.table("batches").update(data).eq("id", batch_id).execute()
