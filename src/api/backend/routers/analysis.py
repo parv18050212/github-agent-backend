@@ -328,7 +328,7 @@ async def list_analysis_jobs(
             
             jobs.append(AnalysisJobListItem(
                 job_id=job_id,
-                team_id=UUID(job["team_id"]),  # Changed from project_id
+                team_id=UUID(job["project_id"]),  # Using project_id field (which contains team_id after migration)
                 repo_url=job.get("repo_url", "Unknown"),
                 team_name=job.get("team_name"),
                 status=job["status"],
