@@ -225,7 +225,7 @@ class TechStackCRUD:
     @staticmethod
     def add_technologies(team_id: UUID, technologies: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         """Add multiple technologies for a team (replaces existing tech stack)"""
-        supabase = get_supabase_client()
+        supabase = get_supabase_admin_client()  # Use admin client for consistency
         
         # Delete existing tech stack first to prevent duplicates on re-analysis
         supabase.table("tech_stack").delete().eq("team_id", str(team_id)).execute()
@@ -280,7 +280,7 @@ class IssueCRUD:
     @staticmethod
     def add_issues(team_id: UUID, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Add multiple issues for a team (replaces existing issues)"""
-        supabase = get_supabase_client()
+        supabase = get_supabase_admin_client()
         
         # Delete existing issues first to prevent duplicates on re-analysis
         supabase.table("issues").delete().eq("team_id", str(team_id)).execute()
@@ -308,7 +308,7 @@ class IssueCRUD:
     @staticmethod
     def get_issues(team_id: UUID) -> List[Dict[str, Any]]:
         """Get all issues for a team"""
-        supabase = get_supabase_client()
+        supabase = get_supabase_admin_client()
         
         result = supabase.table("issues").select("*").eq("team_id", str(team_id)).execute()
         return result.data
@@ -316,7 +316,7 @@ class IssueCRUD:
     @staticmethod
     def delete_by_team(team_id: UUID) -> bool:
         """Delete all issues for a team"""
-        supabase = get_supabase_client()
+        supabase = get_supabase_admin_client()
         result = supabase.table("issues").delete().eq("team_id", str(team_id)).execute()
         return True
 
@@ -327,7 +327,7 @@ class TeamMemberCRUD:
     @staticmethod
     def add_members(team_id: UUID, members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Add multiple team members for a team (replaces existing members)"""
-        supabase = get_supabase_client()
+        supabase = get_supabase_admin_client()  # Use admin client for consistency
         
         # Delete existing members first to prevent duplicates
         supabase.table("team_members").delete().eq("team_id", str(team_id)).execute()
@@ -699,7 +699,7 @@ class TeamCRUD:
     @staticmethod
     def update_team(team_id: UUID, data: Dict[str, Any]) -> Dict[str, Any]:
         """Update team fields"""
-        supabase = get_supabase_client()
+        supabase = get_supabase_admin_client()
         
         try:
             # Add updated_at timestamp

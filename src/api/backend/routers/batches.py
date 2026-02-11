@@ -409,7 +409,7 @@ async def trigger_batch_analysis(
         
         # Get all teams in this batch (projects table has been dropped)
         teams_result = supabase.table("teams")\
-            .select("id, team_name, repo_url, status")\
+            .select("id, team_name, repo_url, status, last_analyzed_at")\
             .eq("batch_id", str(batch_id))\
             .execute()
         
