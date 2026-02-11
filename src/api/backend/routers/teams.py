@@ -386,7 +386,7 @@ async def clear_all_teams(
         supabase.table("issues").delete().in_("project_id", team_ids).execute()
         supabase.table("project_comments").delete().in_("project_id", team_ids).execute()
         supabase.table("tech_stack").delete().in_("project_id", team_ids).execute()
-        supabase.table("team_members").delete().in_("project_id", team_ids).execute()
+        supabase.table("team_members").delete().in_("team_id", team_ids).execute()
         supabase.table("mentor_team_assignments").delete().in_("team_id", team_ids).execute()
         supabase.table("students").delete().in_("team_id", team_ids).execute()
 
@@ -828,7 +828,7 @@ async def bulk_import_teams_with_mentors(
                 # Team Member Record (for analytics aggregation)
                 if team_data.get("repo_url"): # Only if project exists
                     team_members_to_insert.append({
-                        "project_id": team_id,  # Using team_id as project_id after migration
+                        "team_id": team_id,  # Using team_id after migration
                         "name": s_name,
                         "commits": 0,
                         "contribution_pct": 0.0
@@ -925,7 +925,7 @@ async def bulk_import_teams_with_mentors(
                 supabase.table("students").upsert(chunk, on_conflict="email").execute()
 
         if team_members_payload and project_ids_for_members:
-            supabase.table("team_members").delete().in_("project_id", list(set(project_ids_for_members))).execute()
+            supabase.table("team_members").delete().in_("team_id", list(set(project_ids_for_members))).execute()
             for chunk in _chunk(team_members_payload, 500):
                 supabase.table("team_members").insert(chunk).execute()
     except Exception as batch_error:
@@ -1118,7 +1118,7 @@ async def get_team(
     team_members = []
     if team.get("repo_url"):
         # Team members are stored with team_id now (after migration)
-        members_response = supabase.table("team_members").select("*").eq("project_id", str(team_id)).execute()
+        members_response = supabase.table("team_members").select("*").eq("team_id", str(team_id)).execute()
         team_members = members_response.data or []
     
     # Add team_members to response
