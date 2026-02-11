@@ -536,21 +536,15 @@ async def trigger_batch_analysis(
                 print(f"⚠ Celery queueing failed: {celery_error}")
                 print("  Falling back to in-process background tasks...")
         
-        # Fallback: Use old background task method
+        # Fallback: If Celery is not available, just mark as pending
         if not celery_queued:
             supabase.table("batch_analysis_runs").update({
-                "status": "running",
+                "status": "pending",
                 "started_at": datetime.now().isoformat()
             }).eq("id", run_id).execute()
             
-            # Check if background module exists
-            try:
-                from src.api.backend.background import run_batch_sequential
-                import asyncio
-                asyncio.create_task(run_batch_sequential(str(batch_id), repos))
-                print(f"✓ Batch analysis queued via background tasks")
-            except ImportError:
-                print("⚠ Background task module not found - jobs created but not processing")
+            print("⚠ Celery not available - jobs created but not processing automatically")
+            print("  Please ensure Celery worker is running to process the jobs")
         
         return {
             "run_id": run_id,
