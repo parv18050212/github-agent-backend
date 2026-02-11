@@ -70,12 +70,12 @@ class AnalyzerService:
 
     
     @staticmethod
-    def analyze_repository(project_id: UUID, job_id: UUID, repo_url: str, team_name: str = None) -> Dict[str, Any]:
+    def analyze_repository(team_id: UUID, job_id: UUID, repo_url: str, team_name: str = None) -> Dict[str, Any]:
         """
         Run full analysis pipeline on a repository
         
         Args:
-            project_id: UUID of the project (now same as team_id for backward compatibility)
+            team_id: UUID of the team (parameter renamed from project_id for clarity)
             job_id: UUID of the analysis job
             repo_url: GitHub repository URL
             team_name: Optional team name
@@ -87,12 +87,12 @@ class AnalyzerService:
         repo_path = None
         
         try:
-            # Update team status (project_id is now team_id)
-            TeamCRUD.update_team_status(project_id, "analyzing")
+            # Update team status
+            TeamCRUD.update_team_status(team_id, "analyzing")
             tracker.update("starting")
             
             # Prepare output directory
-            output_dir = f"reports/{team_name or str(project_id)}"
+            output_dir = f"reports/{team_name or str(team_id)}"
             os.makedirs(output_dir, exist_ok=True)
             
             # Get API keys from environment
@@ -148,7 +148,7 @@ class AnalyzerService:
             
             # Save results to database
             tracker.update("aggregation", 95)
-            success = DataMapper.save_analysis_results(project_id, report)
+            success = DataMapper.save_analysis_results(team_id, report)
             
             if not success:
                 raise Exception("Failed to save analysis results to database")
@@ -170,7 +170,7 @@ class AnalyzerService:
             print(f"{'='*60}\n")
             
             tracker.fail(error_msg)
-            TeamCRUD.update_team_status(project_id, "failed")
+            TeamCRUD.update_team_status(team_id, "failed")
             
             raise
         

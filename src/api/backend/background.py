@@ -27,7 +27,7 @@ def run_analysis_job(project_id: str, job_id: str, repo_url: str, team_name: str
         
         # Run analysis
         AnalyzerService.analyze_repository(
-            project_id=project_uuid,
+            team_id=project_uuid,  # Changed from project_id to team_id
             job_id=job_uuid,
             repo_url=repo_url,
             team_name=team_name

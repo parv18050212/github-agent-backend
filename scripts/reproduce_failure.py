@@ -50,7 +50,7 @@ def reproduce():
         
         print("Running analysis...")
         AnalyzerService.analyze_repository(
-            project_id=real_project_id,
+            team_id=real_project_id,  # Changed from project_id to team_id
             job_id=real_job_id,
             repo_url=REPO_URL,
             team_name="Reproduction Team"
