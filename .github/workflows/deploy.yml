@@ -29,25 +29,36 @@ jobs:
             set -e
 
             echo "🚀 Deploying backend"
-
             cd ~/github-agent-backend
 
             echo "📥 Pulling latest code"
             git fetch origin
             git reset --hard origin/main
 
-            echo "🐳 Building & starting containers"
+            echo "🐳 Rebuilding & starting containers"
             docker compose down
             docker compose up -d --build
-
-            echo "⏳ Waiting for services to stabilize"
-            sleep 10
 
             echo "📊 Container status"
             docker compose ps
 
-            echo "❤️ Health check"
-            curl -f http://localhost:3000/health || exit 1
+            echo "⏳ Waiting for API to become healthy..."
+
+            MAX_RETRIES=20
+            RETRY_DELAY=5
+            COUNT=0
+
+            until curl -fs http://localhost:3000/health > /dev/null; do
+              COUNT=$((COUNT+1))
+              if [ "$COUNT" -ge "$MAX_RETRIES" ]; then
+                echo "❌ API failed health check after $MAX_RETRIES attempts"
+                echo "📜 Showing API logs:"
+                docker compose logs api --tail=50
+                exit 1
+              fi
+              echo "⏳ Attempt $COUNT/$MAX_RETRIES failed. Retrying in $RETRY_DELAY seconds..."
+              sleep $RETRY_DELAY
+            done
 
             echo "✅ Backend deployment successful"
 
@@ -66,7 +77,6 @@ jobs:
             set -e
 
             echo "↩️ Rolling back backend"
-
             cd ~/github-agent-backend
 
             echo "📥 Fetching refs"
@@ -78,17 +88,29 @@ jobs:
             echo "⏪ Resetting to rollback ref"
             git reset --hard "${{ github.event.inputs.rollback_ref }}"
 
-            echo "🐳 Restarting containers"
+            echo "🐳 Rebuilding & restarting containers"
             docker compose down
             docker compose up -d --build
-
-            echo "⏳ Waiting for services to stabilize"
-            sleep 10
 
             echo "📊 Container status"
             docker compose ps
 
-            echo "❤️ Health check"
-            curl -f http://localhost:3000/health || exit 1
+            echo "⏳ Waiting for API to become healthy..."
+
+            MAX_RETRIES=20
+            RETRY_DELAY=5
+            COUNT=0
+
+            until curl -fs http://localhost:3000/health > /dev/null; do
+              COUNT=$((COUNT+1))
+              if [ "$COUNT" -ge "$MAX_RETRIES" ]; then
+                echo "❌ API failed health check after rollback"
+                echo "📜 Showing API logs:"
+                docker compose logs api --tail=50
+                exit 1
+              fi
+              echo "⏳ Attempt $COUNT/$MAX_RETRIES failed. Retrying in $RETRY_DELAY seconds..."
+              sleep $RETRY_DELAY
+            done
 
             echo "✅ Backend rollback successful"
