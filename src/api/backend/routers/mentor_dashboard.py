@@ -513,7 +513,7 @@ async def grade_team_students(
     This endpoint is separate from admin grading to avoid conflicts.
     Mentors can only grade students in teams assigned to them.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()  # Changed from get_supabase() to bypass RLS
     mentor_id = str(current_user.user_id)
     
     # Verify mentor is assigned to this team
