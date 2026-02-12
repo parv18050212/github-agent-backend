@@ -280,6 +280,138 @@ def analyze_repository_task(
         raise self.retry(exc=exc)
 
 
+@celery_app.task(
+    bind=True,
+    base=CallbackTask,
+    max_retries=3,
+    default_retry_delay=300,  # 5 minutes
+    retry_backoff=True,  # Exponential backoff
+    retry_backoff_max=1800,  # Max 30 minutes
+    retry_jitter=True
+)
+def analyze_single_repository_task(
+    self,
+    team_id: str,
+    job_id: str,
+    repo_url: str,
+    team_name: str = None
+):
+    """
+    Single repository analysis task (dedicated worker, not part of batch)
+    
+    This task is identical to analyze_repository_task but routes to a separate
+    queue (single_analysis) with its own dedicated worker. This prevents single
+    repository analyses from getting stuck behind batch jobs.
+    
+    Args:
+        team_id: Team UUID as string
+        job_id: Job UUID as string
+        repo_url: GitHub repository URL
+        team_name: Optional team name
+    
+    Returns:
+        dict: Analysis results summary
+    """
+    try:
+        logger.info(f"🔍 [SINGLE] Starting analysis for {team_name or repo_url}")
+        logger.info(f"Job ID: {job_id}, Team ID: {team_id}")
+        
+        # Convert string UUIDs to UUID objects
+        team_uuid = UUID(team_id)
+        job_uuid = UUID(job_id)
+        
+        # Update job with Celery task ID
+        supabase = get_supabase_admin_client()
+        supabase.table('analysis_jobs').update({
+            'metadata': {
+                'celery_task_id': self.request.id,
+                'retry_count': self.request.retries,
+                'started_at': datetime.now().isoformat(),
+                'worker_type': 'single'
+            }
+        }).eq('id', job_id).execute()
+        
+        # Run analysis
+        AnalyzerService.analyze_repository(
+            team_id=team_uuid,
+            job_id=job_uuid,
+            repo_url=repo_url,
+            team_name=team_name
+        )
+        
+        # CREATE SNAPSHOT after successful analysis (for 7-day tracking)
+        try:
+            # Get job metadata for run tracking
+            job_metadata = supabase.table('analysis_jobs').select('run_number, batch_id, metadata').eq('id', job_id).execute()
+            run_number = job_metadata.data[0].get('run_number') if job_metadata.data else None
+            batch_run_id = job_metadata.data[0].get('metadata', {}).get('batch_run_id') if job_metadata.data else None
+            
+            # Create snapshot if we have run tracking info
+            if run_number and batch_run_id:
+                create_snapshot_from_team(
+                    team_id=team_id,
+                    run_number=run_number,
+                    batch_run_id=batch_run_id
+                )
+                logger.info(f"📸 Snapshot created for team {team_id}, run {run_number}")
+        except Exception as e:
+            # Don't fail the job if snapshot creation fails
+            logger.warning(f"⚠️ Failed to create snapshot: {e}")
+        
+        logger.info(f"✅ [SINGLE] Analysis completed for {team_name or repo_url}")
+        return {
+            'job_id': job_id,
+            'status': 'completed',
+            'team_name': team_name
+        }
+        
+    except Exception as exc:
+        error_msg = str(exc)
+        logger.error(f"❌ [SINGLE] Analysis failed for {team_name or repo_url}: {error_msg}")
+        
+        # Check for Git Authentication/Access errors (don't retry these)
+        is_git_error_128 = isinstance(exc, subprocess.CalledProcessError) and exc.returncode == 128
+        is_auth_error_text = any(s in error_msg for s in [
+            "return code 128", 
+            "status 128", 
+            "exit status 128",
+            "CalledProcessError(128",
+            "Authentication failed", 
+            "could not read Username",
+            "could not read Password"
+        ])
+        is_auth_error = is_git_error_128 or is_auth_error_text
+        
+        if is_auth_error:
+            logger.error(f"🛑 Permanent failure detected (Access Denied/Private Repo). Aborting retries for {repo_url}")
+            try:
+                AnalysisJobCRUD.fail_job(
+                    job_id=UUID(job_id),
+                    error_message=f"Access Denied: Private Repository or Invalid Credentials. {error_msg}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to update job status: {e}")
+            
+            return {
+                'job_id': job_id,
+                'status': 'failed',
+                'error': f"Access Denied: {error_msg}"
+            }
+
+        # Update job status if max retries exceeded
+        if self.request.retries >= self.max_retries:
+            try:
+                AnalysisJobCRUD.fail_job(
+                    job_id=UUID(job_id),
+                    error_message=f"Max retries exceeded: {error_msg}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to update job status: {e}")
+        
+        # Retry with exponential backoff
+        raise self.retry(exc=exc)
+
+
 @celery_app.task(bind=True)
 def process_batch_sequential(self, batch_id: str, repos: List[Dict[str, str]]):
     """

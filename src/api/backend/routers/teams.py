@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from datetime import datetime
 import csv
 import io
+import logging
+import traceback
 
 from ..models import (
     Team, TeamCreate, TeamUpdate, TeamWithDetails,
@@ -24,6 +26,19 @@ from ..middleware import get_current_user, RoleChecker, AuthUser
 from ..database import get_supabase, get_supabase_admin_client
 
 router = APIRouter(prefix="/api/teams", tags=["Teams"])
+logger = logging.getLogger(__name__)
+
+# Try to import Celery at module level - fail fast if broken
+CELERY_AVAILABLE = False
+CELERY_IMPORT_ERROR = None
+try:
+    from celery_worker import analyze_repository_task
+    CELERY_AVAILABLE = True
+    logger.info("✅ Celery worker module imported successfully")
+except Exception as e:
+    CELERY_IMPORT_ERROR = str(e)
+    logger.error(f"❌ Failed to import Celery worker at startup: {e}")
+    logger.error(traceback.format_exc())
 
 
 @router.get("", response_model=TeamListResponse)
@@ -1474,21 +1489,30 @@ async def update_student_grades(
 async def analyze_team(
     team_id: UUID,
     force: bool = Query(False, description="Force re-analysis (admin only)"),
-    background_tasks: BackgroundTasks = None,
     current_user: AuthUser = Depends(get_current_user)
 ):
     """
     Trigger manual analysis for a team's repository (Admin only).
     
-    Creates an analysis job and queues it for processing.
+    Creates an analysis job and queues it for processing with Celery.
     
     Note: Only admins can manually trigger analysis. Mentors can view analysis
     results but cannot trigger new analyses. Automatic re-analysis is scheduled
     to run every 7 days via the batch analysis system.
     
     Use force=true to re-analyze immediately regardless of the last analysis time.
+    
+    Returns HTTP 503 if Celery is unavailable.
     """
     supabase = get_supabase_admin_client()
+    
+    # Check if Celery is available
+    if not CELERY_AVAILABLE:
+        logger.error(f"Celery unavailable, cannot queue analysis. Error: {CELERY_IMPORT_ERROR}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Analysis service unavailable. Celery worker not accessible: {CELERY_IMPORT_ERROR}"
+        )
     
     # Get team
     team_response = supabase.table("teams").select("*").eq("id", str(team_id)).execute()
@@ -1500,7 +1524,7 @@ async def analyze_team(
     
     # Check if team has repo URL
     if not team.get("repo_url"):
-        raise HTTPException(status_code=404, detail="Team has no repository URL")
+        raise HTTPException(status_code=400, detail="Team has no repository URL")
     
     # For manual admin triggers, check if currently analyzing
     current_status = team.get("status")
@@ -1546,7 +1570,7 @@ async def analyze_team(
             if run_result.data:
                 batch_run_id = run_result.data[0]["id"]
         except Exception as run_error:
-            print(f"⚠ Manual batch run creation failed: {run_error}")
+            logger.warning(f"⚠ Manual batch run creation failed: {run_error}")
 
     # Create analysis job
     job_insert = {
@@ -1570,51 +1594,66 @@ async def analyze_team(
         raise HTTPException(status_code=500, detail="Failed to create analysis job")
     
     job = job_response.data[0]
+    job_id = job["id"]
     
-    # Update team status
+    # Update team status to queued
     supabase.table("teams").update({
         "status": "queued"
     }).eq("id", str(team_id)).execute()
     
-    # Queue task in the background to return fast
-    def _queue_analysis_job():
-        celery_queued = False
-        try:
-            from celery_worker import analyze_repository_task
-            task = analyze_repository_task.delay(
-                team_id=str(team_id),  # Updated to use team_id parameter
-                job_id=str(job["id"]),
-                repo_url=team.get("repo_url"),
-                team_name=team.get("team_name")
-            )
-            admin_supabase = get_supabase_admin_client()
-            admin_supabase.table('analysis_jobs').update({
-                'metadata': {'celery_task_id': task.id}
-            }).eq('id', str(job["id"])).execute()
-            celery_queued = True
-        except Exception as celery_error:
-            print(f"⚠ Celery queueing failed: {celery_error}")
-
-        if not celery_queued:
-            try:
-                from src.api.backend.background import run_analysis_job
-                run_analysis_job(
-                    project_id=str(team_id),
-                    job_id=str(job["id"]),
-                    repo_url=team.get("repo_url"),
-                    team_name=team.get("team_name")
-                )
-            except Exception as fallback_error:
-                print(f"⚠ Fallback analysis failed: {fallback_error}")
-
-    if background_tasks is not None:
-        background_tasks.add_task(_queue_analysis_job)
-    else:
-        _queue_analysis_job()
-
-    return AnalysisJobResponse(
-        job_id=job["id"],
-        team_id=team_id,
-        status="queued",
-        message="Analysis queued successfully"
-    )
+    # Queue Celery task SYNCHRONOUSLY (not in BackgroundTasks)
+    # Use dedicated single_analysis queue for immediate processing
+    try:
+        logger.info(f"🚀 Queueing Celery task for team {team_id}, job {job_id}")
+        
+        # Import the single repository analysis task
+        from celery_worker import analyze_single_repository_task
+        
+        task = analyze_single_repository_task.delay(
+            team_id=str(team_id),
+            job_id=str(job_id),
+            repo_url=team.get("repo_url"),
+            team_name=team.get("team_name")
+        )
+        
+        # Verify task was queued successfully
+        if not task or not task.id:
+            raise Exception("Task queued but no task ID returned")
+        
+        logger.info(f"✅ Celery task queued successfully: {task.id} (single_analysis queue)")
+        
+        # Store celery_task_id in metadata
+        updated_metadata = {**job.get('metadata', {}), 'celery_task_id': task.id, 'queue': 'single_analysis'}
+        supabase.table('analysis_jobs').update({
+            'metadata': updated_metadata
+        }).eq('id', str(job_id)).execute()
+        
+        return AnalysisJobResponse(
+            job_id=job_id,
+            team_id=team_id,
+            status="queued",
+            message="Analysis queued successfully"
+        )
+        
+    except Exception as e:
+        # Celery queuing failed - update job status and return error
+        error_msg = f"Failed to queue Celery task: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        logger.error(traceback.format_exc())
+        
+        # Update job status to failed
+        supabase.table('analysis_jobs').update({
+            'status': 'failed',
+            'error_message': error_msg,
+            'completed_at': datetime.now().isoformat()
+        }).eq('id', str(job_id)).execute()
+        
+        # Update team status back to previous state
+        supabase.table("teams").update({
+            "status": "pending"
+        }).eq("id", str(team_id)).execute()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to queue analysis task: {str(e)}"
+        )

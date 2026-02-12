@@ -62,7 +62,8 @@ celery_app.conf.update(
 
 # Task routes (separate queues)
 celery_app.conf.task_routes = {
-    'celery_worker.analyze_repository_task': {'queue': 'analysis'},
+    'celery_worker.analyze_single_repository_task': {'queue': 'single_analysis'},  # Single repo analysis (dedicated worker)
+    'celery_worker.analyze_repository_task': {'queue': 'single_analysis'},  # Single repo analysis (manual triggers)
     'celery_worker.process_batch_sequential': {'queue': 'batch'},
     'celery_worker.move_to_dlq': {'queue': 'dlq'},
     'celery_worker.update_team_health_status': {'queue': 'default'},
