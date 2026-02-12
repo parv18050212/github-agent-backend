@@ -270,14 +270,14 @@ def node_aggregator(ctx):
     top_ai = max(all_ai_scores) if all_ai_scores else 0.0
     
     # --- Check for empty repository ---
-    total_commits = comm.get("commits", 0)
-    total_files = len(files)
+    total_commits = comm.get("total_commits", 0)
     
-    # If repo has 0 commits or very few files (< 3), consider it empty
-    is_empty_repo = total_commits == 0 or total_files < 3
+    # Only consider repo empty if it has 0 commits
+    # Don't use file count from forensic analysis since it only includes risky files
+    is_empty_repo = total_commits == 0
     
     if is_empty_repo:
-        print("⚠️  Empty repository detected (0 commits or < 3 files). Setting all scores to 0.")
+        print("⚠️  Empty repository detected (0 commits). Setting all scores to 0.")
         scores = {
             "originality": 0,
             "quality": 0,
@@ -310,6 +310,8 @@ def node_aggregator(ctx):
         }
 
     # Apply a hard penalty for docs-only repositories (README-only, no code)
+    # Only apply this penalty if we actually checked the filesystem AND found no code
+    # Don't apply if forensic analysis simply didn't run or found no risky files
     def _is_docs_only_repo(path: str) -> bool:
         if not path or not os.path.exists(path):
             return False
@@ -350,7 +352,8 @@ def node_aggregator(ctx):
 
         return total_files > 0 and non_trivial == 0
 
-    if _is_docs_only_repo(repo_path):
+    # Only apply docs-only penalty if we have very few commits AND no code files
+    if total_commits < 5 and _is_docs_only_repo(repo_path):
         scores = {
             "originality": 5,
             "quality": 5,

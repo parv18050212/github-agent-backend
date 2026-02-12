@@ -8,6 +8,7 @@ from celery_app import celery_app
 from uuid import UUID
 import traceback
 import time
+import os
 from typing import List, Dict
 from datetime import datetime
 import json
@@ -151,6 +152,37 @@ def analyze_repository_task(
         # Convert string UUIDs to UUID objects
         team_uuid = UUID(team_id)
         job_uuid = UUID(job_id)
+        
+        # Check if batch analysis has been paused before starting
+        supabase = get_supabase_admin_client()
+        
+        # Get the batch_id from the job metadata
+        job_data = supabase.table('analysis_jobs').select('metadata').eq('id', job_id).execute()
+        if job_data.data:
+            batch_id = job_data.data[0].get('metadata', {}).get('batch_id')
+            if batch_id:
+                # Check if this batch's analysis run is paused
+                runs_response = supabase.table("batch_analysis_runs")\
+                    .select("status")\
+                    .eq("batch_id", batch_id)\
+                    .order("run_number", desc=True)\
+                    .limit(1)\
+                    .execute()
+                
+                if runs_response.data and runs_response.data[0].get("status") == "paused":
+                    logger.info(f"⏸️  Batch analysis is paused. Skipping analysis for {team_name or repo_url}")
+                    # Update job status to cancelled
+                    supabase.table('analysis_jobs').update({
+                        'status': 'cancelled',
+                        'error_message': 'Batch analysis was paused',
+                        'completed_at': datetime.now().isoformat()
+                    }).eq('id', job_id).execute()
+                    
+                    return {
+                        'job_id': job_id,
+                        'status': 'cancelled',
+                        'reason': 'batch_paused'
+                    }
         
         # Update job with Celery task ID
         supabase = get_supabase_admin_client()
@@ -557,8 +589,8 @@ def auto_trigger_batch_analysis(force: bool = False):
 @celery_app.task
 def send_completion_notification(results: dict):
     """
-    Send notification when batch analysis completes
-    Currently logs to console, can be extended for email/Slack
+    Send email notification when batch analysis completes
+    Sends to all admins and mentors
     
     Args:
         results: Summary dict from auto_trigger_batch_analysis
@@ -580,14 +612,76 @@ def send_completion_notification(results: dict):
     
     logger.info("="*60)
     
-    # TODO: Add email notification
-    # Example:
-    # from src.api.backend.services.email_service import send_email
-    # send_email(
-    #     to=os.getenv('ADMIN_NOTIFICATION_EMAIL'),
-    #     subject='Weekly Batch Analysis Complete',
-    #     body=format_email_body(results)
-    # )
+    # Send email notifications
+    try:
+        from src.api.backend.utils.email import send_alert_email
+        
+        supabase = get_supabase_admin_client()
+        
+        # Get all admins and mentors
+        users_response = supabase.table("users").select("email, role").in_("role", ["admin", "mentor"]).execute()
+        
+        if not users_response.data:
+            logger.warning("No admins or mentors found to send notifications")
+            return {"status": "skipped", "reason": "no_recipients"}
+        
+        # Build email body
+        email_body = f"""Weekly Batch Analysis Complete
+
+Summary:
+--------
+Total Batches: {results.get('total_batches', 0)}
+Triggered: {results.get('triggered', 0)}
+Skipped: {results.get('skipped', 0)}
+Failed: {results.get('failed', 0)}
+
+Batch Details:
+--------------
+"""
+        
+        for detail in results.get('batch_details', []):
+            email_body += f"✓ {detail['batch']}: {detail['teams_queued']} teams analyzed\n"
+        
+        email_body += f"""
+
+New scores are now available in the dashboard.
+
+View your teams: {os.getenv('FRONTEND_URL', 'http://localhost:5173')}/dashboard
+
+---
+This is an automated notification from GitHub Agent Analysis System.
+"""
+        
+        # Send to each user
+        sent_count = 0
+        failed_count = 0
+        
+        for user in users_response.data:
+            try:
+                send_alert_email(
+                    subject="Weekly Analysis Complete - New Scores Available",
+                    body_text=email_body,
+                    to_email=user['email']
+                )
+                sent_count += 1
+                logger.info(f"✓ Email sent to {user['email']} ({user['role']})")
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"✗ Failed to send email to {user['email']}: {e}")
+        
+        logger.info(f"📧 Email notifications: {sent_count} sent, {failed_count} failed")
+        
+        return {
+            "status": "completed",
+            "emails_sent": sent_count,
+            "emails_failed": failed_count,
+            "total_recipients": len(users_response.data)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to send email notifications: {e}")
+        logger.error(traceback.format_exc())
+        return {"status": "failed", "error": str(e)}
     
     return {'notification_sent': True, 'method': 'console_log'}
 

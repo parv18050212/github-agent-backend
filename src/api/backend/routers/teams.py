@@ -1488,7 +1488,7 @@ async def analyze_team(
     
     Use force=true to re-analyze immediately regardless of the last analysis time.
     """
-    supabase = get_supabase()
+    supabase = get_supabase_admin_client()
     
     # Get team
     team_response = supabase.table("teams").select("*").eq("id", str(team_id)).execute()

@@ -189,7 +189,7 @@ class AnalysisJobCRUD:
             teams_result = query.execute()
             teams = teams_result.data
             
-            stats = {"queued": 0, "running": 0, "completed": 0, "failed": 0, "pending": 0}
+            stats = {"queued": 0, "running": 0, "completed": 0, "failed": 0, "pending": 0, "cancelled": 0}
             
             # Count based on Team Status
             # We assume Team status is synced with Job status, or we default to 'pending'
@@ -205,11 +205,33 @@ class AnalysisJobCRUD:
                     # Treat unknown as pending or misc?
                     stats["pending"] += 1
             
+            # Also count cancelled jobs from analysis_jobs table
+            # (since team status might not reflect cancelled state)
+            if latest_only:
+                # Get latest cancelled jobs per team
+                jobs_query = supabase.table("analysis_jobs").select("team_id, status")
+                if batch_id:
+                    # Get team IDs in this batch
+                    team_ids = [t["id"] for t in teams]
+                    if team_ids:
+                        jobs_query = jobs_query.in_("team_id", team_ids)
+                
+                jobs_query = jobs_query.eq("status", "cancelled").order("started_at", desc=True)
+                cancelled_jobs = jobs_query.execute().data
+                
+                # Count unique teams with cancelled status
+                cancelled_team_ids = set()
+                for job in cancelled_jobs:
+                    team_id = job.get("team_id")
+                    if team_id and team_id not in cancelled_team_ids:
+                        cancelled_team_ids.add(team_id)
+                        stats["cancelled"] += 1
+            
             return stats
             
         except Exception as e:
             print(f"Error fetching global stats: {e}")
-            return {"queued": 0, "running": 0, "completed": 0, "failed": 0}
+            return {"queued": 0, "running": 0, "completed": 0, "failed": 0, "cancelled": 0}
 
     @staticmethod
     def delete_by_project(project_id: UUID) -> bool:

@@ -383,12 +383,18 @@ async def trigger_batch_analysis(
     **Permissions:** Admin only
     """
     try:
-        # Import Celery task
+        # Import Celery task (may fail if in separate container, but that's OK)
         try:
             from celery_worker import process_batch_sequential
             CELERY_ENABLED = True
         except ImportError:
-            CELERY_ENABLED = False
+            # Try importing from celery_app instead (works across containers)
+            try:
+                from celery_app import celery_app
+                process_batch_sequential = celery_app.signature('celery_worker.process_batch_sequential')
+                CELERY_ENABLED = True
+            except:
+                CELERY_ENABLED = False
         
         supabase = get_supabase_admin_client()
         
@@ -521,9 +527,17 @@ async def trigger_batch_analysis(
         
         # Queue Celery batch task (or fallback to sequential processing)
         celery_queued = False
+        print(f"[DEBUG] CELERY_ENABLED={CELERY_ENABLED}, repos count={len(repos)}")
+        
         if CELERY_ENABLED and repos:
             try:
-                task = process_batch_sequential.delay(str(batch_id), repos)
+                if callable(process_batch_sequential):
+                    # Direct import worked
+                    task = process_batch_sequential.delay(str(batch_id), repos)
+                else:
+                    # Using signature (cross-container)
+                    task = process_batch_sequential.apply_async(args=[str(batch_id), repos])
+                
                 # Store Celery task ID
                 supabase.table("batch_analysis_runs").update({
                     "status": "running",
@@ -534,17 +548,24 @@ async def trigger_batch_analysis(
                 print(f"✓ Batch analysis queued via Celery (task_id: {task.id})")
             except Exception as celery_error:
                 print(f"⚠ Celery queueing failed: {celery_error}")
+                print(f"  Error type: {type(celery_error).__name__}")
+                import traceback
+                traceback.print_exc()
                 print("  Falling back to in-process background tasks...")
         
-        # Fallback: If Celery is not available, just mark as pending
+        # Fallback: If Celery is not available or no repos to process
         if not celery_queued:
             supabase.table("batch_analysis_runs").update({
-                "status": "pending",
-                "started_at": datetime.now().isoformat()
+                "status": "completed" if jobs_created == 0 else "pending",
+                "started_at": datetime.now().isoformat(),
+                "completed_at": datetime.now().isoformat() if jobs_created == 0 else None
             }).eq("id", run_id).execute()
             
-            print("⚠ Celery not available - jobs created but not processing automatically")
-            print("  Please ensure Celery worker is running to process the jobs")
+            if not CELERY_ENABLED:
+                print("⚠ Celery not available - jobs created but not processing automatically")
+                print("  Please ensure Celery worker is running to process the jobs")
+            elif not repos:
+                print("ℹ No teams queued for analysis (all teams analyzed recently or no teams in batch)")
         
         return {
             "run_id": run_id,
@@ -870,7 +891,7 @@ async def pause_batch_analysis(
         
         # Get the most recent running batch analysis run
         runs_response = supabase.table("batch_analysis_runs")\
-            .select("id, run_number, status")\
+            .select("id, run_number, status, metadata")\
             .eq("batch_id", str(batch_id))\
             .in_("status", ["pending", "running"])\
             .order("run_number", desc=True)\
@@ -887,12 +908,19 @@ async def pause_batch_analysis(
         run_id = run["id"]
         
         # Update run status to paused
+        # Get existing metadata first
+        existing_metadata = run.get("metadata", {}) or {}
+        
+        # Merge with new pause info
+        updated_metadata = {
+            **existing_metadata,
+            "paused_at": datetime.now().isoformat(),
+            "paused_by": current_user.email
+        }
+        
         supabase.table("batch_analysis_runs").update({
             "status": "paused",
-            "metadata": {
-                "paused_at": datetime.now().isoformat(),
-                "paused_by": current_user.email
-            }
+            "metadata": updated_metadata
         }).eq("id", run_id).execute()
         
         return {
@@ -930,12 +958,18 @@ async def resume_batch_analysis(
     **Permissions:** Admin only
     """
     try:
-        # Import Celery task
+        # Import Celery task (may fail if in separate container, but that's OK)
         try:
             from celery_worker import resume_batch_analysis_task
             CELERY_ENABLED = True
         except ImportError:
-            CELERY_ENABLED = False
+            # Try importing from celery_app instead (works across containers)
+            try:
+                from celery_app import celery_app
+                resume_batch_analysis_task = celery_app.signature('celery_worker.resume_batch_analysis_task')
+                CELERY_ENABLED = True
+            except:
+                CELERY_ENABLED = False
         
         supabase = get_supabase_admin_client()
         
@@ -970,6 +1004,35 @@ async def resume_batch_analysis(
         
         run = runs_response.data[0]
         run_id = run["id"]
+        
+        # Check if batch was paused recently (within 120 seconds)
+        metadata = run.get("metadata", {})
+        paused_at_str = metadata.get("paused_at")
+        
+        if paused_at_str:
+            try:
+                # Parse the paused_at timestamp
+                if paused_at_str.endswith('Z'):
+                    paused_at_str = paused_at_str[:-1] + '+00:00'
+                paused_at = datetime.fromisoformat(paused_at_str)
+                
+                # Calculate time since pause (use timezone-naive comparison)
+                now = datetime.now()
+                if paused_at.tzinfo is not None:
+                    # Convert to naive datetime for comparison
+                    paused_at = paused_at.replace(tzinfo=None)
+                
+                time_since_pause = (now - paused_at).total_seconds()
+                
+                if time_since_pause < 120:
+                    remaining_time = int(120 - time_since_pause)
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Please wait {remaining_time} seconds before resuming. This allows current jobs to complete gracefully."
+                    )
+            except (ValueError, AttributeError):
+                # If datetime parsing fails, allow resume
+                pass
         
         # Get all teams that haven't been analyzed yet in this run
         teams_result = supabase.table("teams")\
@@ -1043,7 +1106,13 @@ async def resume_batch_analysis(
         # Queue Celery task to process remaining repos
         if CELERY_ENABLED:
             try:
-                task = resume_batch_analysis_task.delay(str(batch_id), run_id, repos)
+                if callable(resume_batch_analysis_task):
+                    # Direct import worked
+                    task = resume_batch_analysis_task.delay(str(batch_id), run_id, repos)
+                else:
+                    # Using signature (cross-container)
+                    task = resume_batch_analysis_task.apply_async(args=[str(batch_id), run_id, repos])
+                
                 # Store Celery task ID
                 supabase.table("batch_analysis_runs").update({
                     "metadata": {

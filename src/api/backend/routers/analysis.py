@@ -390,7 +390,7 @@ async def get_analysis_stats(
 async def list_analysis_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    job_status: Optional[str] = Query(None, alias="status", pattern="^(queued|running|completed|failed|pending)$"),
+    job_status: Optional[str] = Query(None, alias="status", pattern="^(queued|running|completed|failed|pending|cancelled)$"),
     latest: bool = Query(True, description="Show only the latest job per project")
 ):
     """

@@ -64,10 +64,21 @@ async def get_team_analysis_history(
     # Add historical snapshots
     for snapshot in snapshots.data or []:
         run_info = snapshot.get("batch_analysis_runs", {})
+        analyzed_at = snapshot.get("analyzed_at") or run_info.get("completed_at")
+        
+        # Format date as label (e.g., "Feb 11, 2026" or "11 Feb 2026")
+        run_label = "Unknown Date"
+        if analyzed_at:
+            try:
+                dt = datetime.fromisoformat(analyzed_at.replace('Z', '+00:00'))
+                run_label = dt.strftime("%b %d, %Y")  # e.g., "Feb 11, 2026"
+            except:
+                run_label = analyzed_at[:10] if len(analyzed_at) >= 10 else analyzed_at
+        
         results.append({
             "runNumber": snapshot["run_number"],
-            "runLabel": f"Week {snapshot['run_number']}",
-            "analyzedAt": snapshot.get("analyzed_at") or run_info.get("completed_at"),
+            "runLabel": run_label,
+            "analyzedAt": analyzed_at,
             "scores": {
                 "total": snapshot.get("total_score"),
                 "quality": snapshot.get("quality_score"),
