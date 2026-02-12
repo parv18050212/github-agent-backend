@@ -1507,7 +1507,7 @@ async def analyze_team(
     if current_status in ["analyzing", "queued"]:
         return AnalysisJobResponse(
             job_id=None,
-            project_id=str(team_id),
+            team_id=team_id,
             status="skipped",
             message=f"Analysis already in progress (status: {current_status})"
         )
@@ -1614,7 +1614,7 @@ async def analyze_team(
 
     return AnalysisJobResponse(
         job_id=job["id"],
-        project_id=str(team_id),
+        team_id=team_id,
         status="queued",
         message="Analysis queued successfully"
     )
