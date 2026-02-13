@@ -16,7 +16,7 @@ gitpython
 pandas
 openpyxl
 python-dotenv
-google-genai
+openai
 matplotlib
 radon          
 chardet

@@ -96,7 +96,7 @@ class AnalyzerService:
             os.makedirs(output_dir, exist_ok=True)
             
             # Get API keys from environment
-            gemini_key = os.getenv("GEMINI_API_KEY")
+            openai_key = os.getenv("OPENAI_API_KEY")
             
             # LLM providers for forensics (currently disabled by default)
             providers = []  # Can be populated from config if needed
@@ -115,7 +115,7 @@ class AnalyzerService:
                 repo_url=repo_url,
                 output_dir=output_dir,
                 providers=providers,
-                gemini_key=gemini_key,
+                openai_key=openai_key,
                 progress_callback=progress_callback
             )
             

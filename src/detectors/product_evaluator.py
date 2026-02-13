@@ -1,7 +1,6 @@
 import os
 import json
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from src.utils.repo_summary import generate_repo_summary
 
 def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
@@ -9,7 +8,7 @@ def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
     if not api_key:
         return {
             "project_name": "Unknown", 
-            "description": "No Gemini API Key provided.",
+            "description": "No OpenAI API Key provided.",
             "features": [],
             "score": 0,
             "feedback": "Skipped"
@@ -27,52 +26,52 @@ def evaluate_product_logic(repo_path: str, api_key: str = None) -> dict:
             "verdict": "Analysis Incomplete"
         }
 
-    print("      🧠 Generating Codebase Summary for Gemini 2.5...")
+    print("      🧠 Generating Codebase Summary for OpenAI GPT-4o-mini...")
     context = generate_repo_summary(repo_path)
     
-    # 2. Configure Gemini API
+    # 2. Configure OpenAI API
     try:
-        client = genai.Client(api_key=api_key)
+        client = OpenAI(api_key=api_key)
         
-        prompt = f"""
-        You are a Senior CTO judging a Hackathon. Analyze the following codebase summary.
-        
-        OUTPUT MUST BE VALID JSON ONLY. NO MARKDOWN.
-        
-        JSON Schema:
-        {{
-            "project_name": "inferred name",
-            "description": "1 sentence summary",
-            "features": ["list", "of", "features"],
-            "tech_stack_observed": ["list", "of", "libs"],
-            "implementation_score": (0-100 int),
-            "positive_feedback": "string",
-            "constructive_feedback": "string",
-            "verdict": "Production Ready / Prototype / Broken"
-        }}
+        prompt = f"""You are a Senior CTO judging a Hackathon. Analyze the following codebase summary.
 
-        CODEBASE CONTEXT:
-        {context}
-        """
+OUTPUT MUST BE VALID JSON ONLY. NO MARKDOWN.
+
+JSON Schema:
+{{
+    "project_name": "inferred name",
+    "description": "1 sentence summary",
+    "features": ["list", "of", "features"],
+    "tech_stack_observed": ["list", "of", "libs"],
+    "implementation_score": (0-100 int),
+    "positive_feedback": "string",
+    "constructive_feedback": "string",
+    "verdict": "Production Ready / Prototype / Broken"
+}}
+
+CODEBASE CONTEXT:
+{context}"""
 
         # 3. Call API
-        print("      🚀 Sending to Gemini 2.5 Flash...")
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+        print("      🚀 Sending to OpenAI GPT-4o-mini...")
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a Senior CTO judging a Hackathon. Respond only with valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7
         )
         
         # 4. Parse Response
-        if response.text:
-            return json.loads(response.text)
+        if response.choices[0].message.content:
+            return json.loads(response.choices[0].message.content)
         return {}
 
     except Exception as e:
-        print(f"      ❌ Gemini Error: {e}")
-        # Return defaults instead of error state when Gemini fails
+        print(f"      ❌ OpenAI Error: {e}")
+        # Return defaults instead of error state when OpenAI fails
         return {
             "project_name": "Unknown",
             "description": "Analysis unavailable due to API error",

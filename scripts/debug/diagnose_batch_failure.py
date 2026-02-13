@@ -10,7 +10,7 @@ sys.path.append(os.getcwd())
 load_dotenv()
 
 # Check for API key first
-print(f"GEMINI_API_KEY present: {'Yes' if os.getenv('GEMINI_API_KEY') else 'No'}")
+print(f"OPENAI_API_KEY present: {'Yes' if os.getenv('OPENAI_API_KEY') else 'No'}")
 
 try:
     from src.api.backend.crud import AnalysisJobCRUD, BatchCRUD

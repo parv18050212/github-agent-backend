@@ -170,8 +170,8 @@ def node_ai_judge(ctx):
     if progress_callback:
         progress_callback("ai_judge", 90)
     
-    print(f"[9/10] 🧠 Gemini (2.5) is reviewing the product logic...")
-    api_key = ctx.get("gemini_key") or os.environ.get("GEMINI_API_KEY")
+    print(f"[9/10] 🧠 OpenAI (GPT-4o-mini) is reviewing the product logic...")
+    api_key = ctx.get("openai_key") or os.environ.get("OPENAI_API_KEY")
     return {"ai_judgment": evaluate_product_logic(ctx.get("repo_path"), api_key)}
 
 def node_aggregator(ctx):
@@ -399,7 +399,7 @@ def node_aggregator(ctx):
 # 2. Build Pipeline
 # ==========================================
 
-def build_pipeline(repo_url, output_dir, providers, gemini_key, progress_callback=None):
+def build_pipeline(repo_url, output_dir, providers, openai_key, progress_callback=None):
     g = SimpleLangGraph()
     
     g.add_node("clone", node_clone_repo)
@@ -437,7 +437,7 @@ def build_pipeline(repo_url, output_dir, providers, gemini_key, progress_callbac
         "repo_url": repo_url, 
         "output_dir": output_dir, 
         "llm_providers": providers,
-        "gemini_key": gemini_key,
+        "openai_key": openai_key,
         "progress_callback": progress_callback
     })
 
@@ -662,7 +662,7 @@ def parse_input_file(file_path):
 # 5. Batch Runner (SAFE SAVE)
 # ==========================================
 
-def run_batch_mode(file_path, output_dir, providers, gemini_key):
+def run_batch_mode(file_path, output_dir, providers, openai_key):
     repos = parse_input_file(file_path)
     
     if not repos:
@@ -687,7 +687,7 @@ def run_batch_mode(file_path, output_dir, providers, gemini_key):
         os.makedirs(team_out_dir, exist_ok=True)
         
         try:
-            res = build_pipeline(url, team_out_dir, providers, gemini_key)
+            res = build_pipeline(url, team_out_dir, providers, openai_key)
             data = res.get("final_report", {})
             score_row = save_csv_results(team_out_dir, team_name, data)
             results.append(score_row)
@@ -834,10 +834,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
     
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    if not gemini_key:
-        print("❌ FATAL: GEMINI_API_KEY not found in .env file.")
-        print("   Please create a .env file with: GEMINI_API_KEY=your_key")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        print("❌ FATAL: OPENAI_API_KEY not found in .env file.")
+        print("   Please create a .env file with: OPENAI_API_KEY=your_key")
         sys.exit(1)
 
     # Use CLI arg if provided, else use config
@@ -851,10 +851,10 @@ if __name__ == "__main__":
         
         if is_file:
             print(f"🚀 Running BATCH MODE using file: {target_input}")
-            run_batch_mode(target_input, args.out, args.providers, gemini_key)
+            run_batch_mode(target_input, args.out, args.providers, openai_key)
         elif is_url:
             print(f"🚀 Running SINGLE MODE on URL: {target_input}")
-            res = build_pipeline(target_input, args.out, args.providers, gemini_key)
+            res = build_pipeline(target_input, args.out, args.providers, openai_key)
             data = res.get("final_report", {})
             print_single_report(data)
             save_csv_results(args.out, "Project", data)

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 os.environ["SUPABASE_URL"] = "https://test.supabase.co"
 os.environ["SUPABASE_KEY"] = "test-key"
 os.environ["SUPABASE_SERVICE_KEY"] = "test-service-key"
-os.environ["GEMINI_API_KEY"] = "test-gemini-key"
+os.environ["OPENAI_API_KEY"] = "test-openai-key"
 os.environ["GITHUB_API_KEY"] = "test-github-key"
 
 # Patch Supabase at import time to prevent real connections

@@ -30,7 +30,7 @@ def main():
     os.environ["SUPABASE_URL"] = "https://test.supabase.co"
     os.environ["SUPABASE_KEY"] = "test_key"
     os.environ["SUPABASE_SERVICE_KEY"] = "test_service_key"
-    os.environ["GEMINI_API_KEY"] = "test_gemini_key"
+    os.environ["OPENAI_API_KEY"] = "test_openai_key"
     
     results = []
     
